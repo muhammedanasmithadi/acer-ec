@@ -1,10 +1,6 @@
 #!/bin/bash
 set -euo pipefail
 
-if [[ "$(id -u)" -ne 0 ]]; then
-    exec sudo "$0" "$@"
-fi
-
 SYS=/sys/kernel/acer_fanctl
 CACHE=~/.cache/acer-current-profile
 PROFILES=(quiet balanced performance gaming)
@@ -52,17 +48,17 @@ cmd_set() {
     local cpu="${CPU_PROFILE[$name]}"
     local gpu="${GPU_WATTS[$name]}"
 
-    # EC fan profile
+    # EC fan profile (requires root for sysfs write)
     if [[ -f "$SYS/profile" ]]; then
-        echo "$ec" > "$SYS/profile"
+        echo "$ec" | sudo tee "$SYS/profile" > /dev/null
     fi
 
-    # CPU power profile
+    # CPU power profile (runs as current user via D-Bus)
     if command -v powerprofilesctl &>/dev/null; then
         powerprofilesctl set "$cpu" 2>/dev/null || true
     fi
 
-    # GPU power limit
+    # GPU power limit (runs as current user, may fail on hybrid GPUs)
     if command -v nvidia-smi &>/dev/null; then
         nvidia-smi -pl "$gpu" >/dev/null 2>&1 || true
     fi
@@ -71,7 +67,9 @@ cmd_set() {
     mkdir -p "$(dirname "$CACHE")"
     echo "$name" > "$CACHE"
 
-    echo "Profile set to $name (EC=$ec, CPU=$cpu, GPU=${gpu}W)"
+    local gpu_actual
+    gpu_actual=$(nvidia-smi -q -d POWER 2>/dev/null | grep "Current Power Limit" | awk -F': *' '{print $2}' | awk '{print $1}' | head -1)
+    echo "Profile set to $name (EC=$ec, CPU=$cpu, GPU=${gpu_actual:-n/a}W)"
 }
 
 cmd_show() {
