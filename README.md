@@ -136,6 +136,10 @@ acer-ec/
 - **Fan 1 (CPU) is EC-protected.** Manual duty writes via `fan1_duty_set` are
   accepted but the EC firmware overwrites DUT1 within ~500ms. Use `profile`
   switching for indirect CPU fan control.
+- **GPU power limiting is not supported on this laptop.** NVIDIA driver 530+
+  removed `nvidia-smi -pl` for laptop GPUs, and the Acer BIOS disables
+  Dynamic Boost. The GPU power limit is firmware-managed. The `profile` script
+  sets EC fans and CPU power profile; GPU power is informational only.
 - **No `dracut --force` needed.** Modules are loaded after rootfs via
   `modules-load.d`. Initramfs inclusion is unnecessary.
 - **RPM values** are converted from raw tachometer periods. Formula:
@@ -160,7 +164,8 @@ profile gaming              # EC=4, CPU=performance, GPU=75W
 ```
 
 Each profile sets all three subsystems simultaneously. Missing subsystems
-(power-profiles-daemon or nvidia-smi) are silently skipped.
+(power-profiles-daemon or nvidia-smi) are silently skipped. GPU power limiting
+is firmware-controlled on this laptop and cannot be changed via software.
 
 ### `acer-ec` — EC-only control
 

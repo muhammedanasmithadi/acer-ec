@@ -64,7 +64,7 @@ cmd_set() {
 
     # GPU power limit
     if command -v nvidia-smi &>/dev/null; then
-        nvidia-smi -pl "$gpu" 2>/dev/null || true
+        nvidia-smi -pl "$gpu" >/dev/null 2>&1 || true
     fi
 
     # Cache state
