@@ -8,6 +8,21 @@ LOAD_D="/etc/modules-load.d"
 
 echo "=== acer-ec installer ==="
 
+# ---- 0. Preflight ----
+command -v pahole &>/dev/null || { echo "ERROR: pahole not found. Install: sudo dnf install dwarves"; exit 1; }
+
+# Sync kernel-devel .config with running kernel to avoid struct module size mismatch
+KDEV_CFG="/usr/src/kernels/$KVERSION/.config"
+BOOT_CFG="/boot/config-$KVERSION"
+if [ -f "$BOOT_CFG" ] && [ -f "$KDEV_CFG" ]; then
+    if ! grep -q "CONFIG_DEBUG_INFO_BTF_MODULES=y" "$KDEV_CFG" 2>/dev/null; then
+        echo "Syncing kernel-devel config (missing BTF)..."
+        cp "$BOOT_CFG" "$KDEV_CFG"
+        make -C "/usr/src/kernels/$KVERSION" olddefconfig
+        make -C "/usr/src/kernels/$KVERSION" modules_prepare
+    fi
+fi
+
 # ---- 1. Remove old monolithic install if present ----
 if lsmod | grep -q "^acer_fanctl"; then
     echo "Removing old acer_fanctl module..."
@@ -37,6 +52,9 @@ cp -v acer_ec_core.ko acer_fanctl.ko "$MODDIR/"
 if [ -f acer_ec_debug.ko ]; then
     cp -v acer_ec_debug.ko "$MODDIR/"
 fi
+if [ -f acer_wmi_extras.ko ]; then
+    cp -v acer_wmi_extras.ko "$MODDIR/"
+fi
 depmod -a
 
 # ---- 4. Modprobe config ----
@@ -52,26 +70,15 @@ cat > "$LOAD_D/acer-ec.conf" <<'CONF'
 # Load acer EC modules at boot
 acer_ec_core
 acer_fanctl
+acer_wmi_extras
 CONF
 echo "Wrote $LOAD_D/acer-ec.conf"
 
-# ---- 5b. DKMS registration (if available) ----
-if command -v dkms &>/dev/null; then
-    if [ ! -d "/var/lib/dkms/acer-ec" ]; then
-        echo "Registering with DKMS..."
-        dkms add "$PWD" 2>/dev/null || true
-        dkms install acer-ec/0.1 2>/dev/null || true
-        echo "DKMS registered — modules will auto-rebuild on kernel updates"
-    else
-        echo "DKMS already registered — skipping"
-    fi
-else
-    echo "DKMS not found — modules won't auto-rebuild after kernel updates"
-fi
-
-# ---- 6b. Install CLI ----
+# ---- 5b. Install CLI + profile script ----
 cp -v src/acer-ec.sh /usr/local/bin/acer-ec
 chmod +x /usr/local/bin/acer-ec
+cp -v src/profile /usr/local/bin/profile
+chmod +x /usr/local/bin/profile
 
 # ---- 5c. lm_sensors config ----
 mkdir -p /etc/sensors.d
