@@ -32,6 +32,5 @@ rm -f /etc/modprobe.d/acer-ec.conf
 rm -f /etc/modules-load.d/acer-ec.conf
 rm -f /etc/sensors.d/acer-ec.conf
 rm -f /usr/local/bin/acer-ec
-rm -f /usr/local/bin/profile
 
 echo "=== Done ==="

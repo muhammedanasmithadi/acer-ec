@@ -18,9 +18,11 @@ static struct device *hwmon_dev;
 
 static inline u16 raw_to_rpm(u16 raw)
 {
-	if (raw == 0 || raw > 60000)
+	if (raw < 500)
 		return 0;
-	return 60000000U / raw;
+	if (raw > 60000)
+		return 0;
+	return min_t(unsigned int, 60000000U / raw, 65535U);
 }
 
 /* --- sysfs read helpers --- */
