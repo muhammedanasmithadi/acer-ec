@@ -92,7 +92,33 @@ sudo ./install.sh
 sudo dnf install dwarves kernel-devel-$(uname -r)
 ```
 
-### Manual rebuild after kernel update
+### Kernel updates (DKMS)
+
+`install.sh` uses DKMS when available. `dkms.conf` sets
+`AUTOINSTALL="yes"`, so the modules rebuild automatically for each new
+kernel that installs. A new kernel only needs its `kernel-devel` package:
+
+```bash
+sudo dnf install kernel-devel-$(uname -r)
+```
+
+DKMS keeps the modules consistent across kernels. To refresh the modules
+for the running kernel:
+
+```bash
+sudo dkms uninstall -m acer-ec -v 0.1 --all
+sudo dkms build -m acer-ec -v 0.1 -k $(uname -r)
+sudo dkms install -m acer-ec -v 0.1 -k $(uname -r)
+```
+
+To force reinstall via `install.sh` (re-runs the DKMS add/build/install
+flow and rewrites the modprobe/modules-load/sensors configs):
+
+```bash
+sudo ./install.sh
+```
+
+### Manual rebuild after kernel update (no DKMS)
 
 ```bash
 # Sync kernel-devel config with running kernel (avoids struct module mismatch)
