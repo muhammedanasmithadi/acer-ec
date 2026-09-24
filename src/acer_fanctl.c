@@ -16,21 +16,33 @@
 static struct kobject *fan_kobj;
 static struct device *hwmon_dev;
 
+/*
+ * Tach constant 120,000,000 — the EC counts both edges of the tach
+ * signal (dual-transition), so the raw period is halved vs the naive
+ * 60M. Calibrated Sep 2026 against Acer's Windows utility (~5000 RPM
+ * at max): CoolerBoost raw≈25104 -> ~4780, all-core ramp raw≈24327 ->
+ * ~4934 — two independent max-state points converging. Settled-state
+ * readings verified 35/35 stable; readings taken during fast RPM slews
+ * can tear (the EC updates the 16-bit tach non-atomically) and inflated
+ * transition values must not be trusted.
+ */
 static inline u16 raw_to_rpm(u16 raw)
 {
-	if (raw == 0 || raw > 60000)
+	if (raw < 500)
 		return 0;
-	return 60000000U / raw;
+	if (raw > 60000)
+		return 0;
+	return min_t(unsigned int, 120000000U / raw, 65535U);
 }
 
 /* --- sysfs read helpers --- */
 #define FAN_SHOW8(name, off) \
 static ssize_t name##_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf) \
-{ return sprintf(buf, "%d\n", (int)ec_core_read8(off)); }
+{ return sysfs_emit(buf, "%d\n", (int)ec_core_read8(off)); }
 
 #define FAN_SHOW16_RPM(name, off) \
 static ssize_t name##_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf) \
-{ return sprintf(buf, "%u\n", (unsigned)raw_to_rpm(ec_core_read16(off))); }
+{ return sysfs_emit(buf, "%u\n", (unsigned)raw_to_rpm(ec_core_read16(off))); }
 
 FAN_SHOW8(fan1_duty, 0xCE)
 FAN_SHOW8(fan2_duty, 0xCF)
@@ -46,6 +58,13 @@ FAN_SHOW8(rinf_val, 0xDB)
 FAN_SHOW8(tmp_temp, 0x07)
 
 /* --- sysfs: profile (1-4) --- */
+/*
+ * Last profile successfully requested via SCMD (0 = unknown, e.g. the
+ * init-time SCMD failed). The show side reports this value — not a
+ * static legend — so userspace can verify a switch landed in the EC.
+ */
+static int current_profile;
+
 static ssize_t profile_store(struct kobject *kobj, struct kobj_attribute *attr,
 			     const char *buf, size_t count)
 {
@@ -55,15 +74,23 @@ static ssize_t profile_store(struct kobject *kobj, struct kobj_attribute *attr,
 	if (val < 1 || val > 4) return -EINVAL;
 	ret = ec_core_scmd(0x69, BIT(val - 1), 0, 0, 0);
 	if (ret) return ret;
+	current_profile = val;
 	return count;
 }
 
 static ssize_t profile_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
-	return sprintf(buf, "1=quiet 2=balanced 3=performance 4=gaming\n");
+	return sysfs_emit(buf, "%d\n", current_profile);
 }
 
 /* --- sysfs: fan2_duty_set (0-255) --- */
+/*
+ * Read-modify-write is MANDATORY here: SCMD 0x68 programs both fan
+ * channels in one call. A previous revision sent byte0=0, which latched
+ * the CPU channel to 0 and stopped the CPU fan (verified live — package
+ * kept climbing with rpm1=0 until CoolerBoost was cycled). Always
+ * preserve the channel we are not changing.
+ */
 static ssize_t fan2_duty_set_store(struct kobject *kobj, struct kobj_attribute *attr,
 				   const char *buf, size_t count)
 {
@@ -71,17 +98,18 @@ static ssize_t fan2_duty_set_store(struct kobject *kobj, struct kobj_attribute *
 	int ret = kstrtou32(buf, 0, &val);
 	if (ret) return ret;
 	if (val > 255) return -EINVAL;
-	ret = ec_core_scmd(0x68, 0, val, 0, 0);
+	ret = ec_core_scmd(0x68, ec_core_read8(0xCE), val, 0, 0);
 	if (ret) return ret;
 	return count;
 }
 
 /*
- * fan1_duty_set — EXPERIMENTAL.
- * Fan 1 (CPU) is EC-protected. SCMD 0x68 byte0 does not persist
- * because the EC firmware overwrites DUT1 within ~500ms.
- * This may be unlockable via the WINF register (0xDA) "OS takeover" bit.
- * Provided for research purposes; may have no effect.
+ * fan1_duty_set — DANGEROUS, not just experimental.
+ * Verified live: SCMD 0x68 byte0 writes LATCH (they are not overwritten
+ * by the EC within 500ms — that assumption was wrong). Writing 0 stops
+ * the CPU fan and it stays stopped: profile switching does NOT restore
+ * auto control. Recovery is Fn+1 CoolerBoost on/off, or writing a sane
+ * duty here. Provided for research; understand the above first.
  */
 static ssize_t fan1_duty_set_store(struct kobject *kobj, struct kobj_attribute *attr,
 				   const char *buf, size_t count)
@@ -90,7 +118,7 @@ static ssize_t fan1_duty_set_store(struct kobject *kobj, struct kobj_attribute *
 	int ret = kstrtou32(buf, 0, &val);
 	if (ret) return ret;
 	if (val > 255) return -EINVAL;
-	ret = ec_core_scmd(0x68, val, 0, 0, 0);
+	ret = ec_core_scmd(0x68, val, ec_core_read8(0xCF), 0, 0);
 	if (ret) return ret;
 	return count;
 }
@@ -114,18 +142,24 @@ static ssize_t all_show(struct kobject *kobj, struct kobj_attribute *attr, char 
 	u8 winf = ec_core_read8(0xDA);
 	u8 rinf = ec_core_read8(0xDB);
 	u8 tmp  = ec_core_read8(0x07);
+	int len = 0;
 
-	return sprintf(buf,
-		"dut1=%d dut2=%d\n"
-		"raw1=%u raw2=%u raw3=%u raw4=%u\n"
-		"rpm1=%u rpm2=%u rpm3=%u rpm4=%u\n"
-		"dthl=%d dtbp=%d airp=%d winf=%d rinf=%d\n"
-		"tmp=%d\n",
-		dut1, dut2,
-		raw1, raw2, raw3, raw4,
-		rpm1, rpm2, rpm3, rpm4,
-		dthl, dtbp, airp, winf, rinf,
-		tmp);
+	/*
+	 * NOTE: multi-part output must use sysfs_emit_at(), not
+	 * sysfs_emit(buf + len). The latter trips a WARN_ON inside
+	 * sysfs_emit (fs/sysfs/file.c) on every read — observed live
+	 * as "WARNING at sysfs_emit" from cat(1).
+	 */
+	len += sysfs_emit(buf, "dut1=%d dut2=%d\n", dut1, dut2);
+	len += sysfs_emit_at(buf, len, "raw1=%u raw2=%u raw3=%u raw4=%u\n",
+			      raw1, raw2, raw3, raw4);
+	len += sysfs_emit_at(buf, len, "rpm1=%u rpm2=%u rpm3=%u rpm4=%u\n",
+			      rpm1, rpm2, rpm3, rpm4);
+	len += sysfs_emit_at(buf, len, "dthl=%d dtbp=%d airp=%d winf=%d rinf=%d\n",
+			      dthl, dtbp, airp, winf, rinf);
+	len += sysfs_emit_at(buf, len, "tmp=%d\n", tmp);
+	len += sysfs_emit_at(buf, len, "profile=%d\n", current_profile);
+	return len;
 }
 
 static struct kobj_attribute fan1_duty_attr = __ATTR_RO(fan1_duty);
@@ -223,8 +257,20 @@ static int __init acer_fanctl_init(void)
 		return ret;
 	}
 
-	if (profile_param >= 1 && profile_param <= 4)
-		ec_core_scmd(0x69, BIT(profile_param - 1), 0, 0, 0);
+	if (profile_param >= 1 && profile_param <= 4) {
+		ret = ec_core_scmd(0x69, BIT(profile_param - 1), 0, 0, 0);
+		if (ret) {
+			pr_err("failed to apply initial profile %d (err %d), EC keeps firmware default\n",
+			       profile_param, ret);
+			current_profile = 0;
+		} else {
+			current_profile = profile_param;
+		}
+	} else {
+		pr_warn("invalid profile_param=%d, EC keeps firmware default\n",
+			profile_param);
+		current_profile = 0;
+	}
 
 	hwmon_dev = hwmon_device_register_with_groups(NULL, "acer_ec",
 						      NULL, acer_hwmon_groups);
@@ -234,7 +280,7 @@ static int __init acer_fanctl_init(void)
 		hwmon_dev = NULL;
 	}
 
-	pr_info("loaded (profile=%d) - see /sys/kernel/acer_fanctl/\n", profile_param);
+	pr_info("loaded (profile=%d) - see /sys/kernel/acer_fanctl/\n", current_profile);
 	return 0;
 }
 

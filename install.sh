@@ -41,27 +41,43 @@ if [ -f "$LOAD_D/acer_fanctl.conf" ]; then
     rm -f "$LOAD_D/acer_fanctl.conf"
 fi
 
-# ---- 2. Build ----
-echo "Building modules..."
-make -C /lib/modules/"$KVERSION"/build M="$PWD" modules
+# ---- 2. Build (DKMS with direct-make fallback) ----
+DKMS_PKG=$(sed -n 's/^PACKAGE_NAME="\(.*\)"/\1/p' dkms.conf)
+DKMS_VER=$(sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' dkms.conf)
 
-# ---- 3. Install ----
-echo "Installing to $MODDIR"
-mkdir -p "$MODDIR"
-cp -v acer_ec_core.ko acer_fanctl.ko "$MODDIR/"
-if [ -f acer_ec_debug.ko ]; then
-    cp -v acer_ec_debug.ko "$MODDIR/"
+if command -v dkms &>/dev/null; then
+    echo "Building and installing via DKMS ($DKMS_PKG/$DKMS_VER)..."
+    # Purge the DKMS tree for this module first. Without this, a stale
+    # build cache can make `dkms build` relink old .o files (MODPOST-only,
+    # ~1s, no CC lines) and silently reinstall the previous build.
+    # A real build takes tens of seconds — watch for CC lines below.
+    dkms remove -m "$DKMS_PKG" -v "$DKMS_VER" --all 2>/dev/null || true
+    rm -rf "/var/lib/dkms/$DKMS_PKG"
+    dkms add "$PWD"
+    dkms build -m "$DKMS_PKG" -v "$DKMS_VER" -k "$KVERSION"
+    dkms install -m "$DKMS_PKG" -v "$DKMS_VER" -k "$KVERSION"
+else
+    echo "dkms not found — using direct build"
+    make -C /lib/modules/"$KVERSION"/build M="$PWD" modules
+    echo "Installing to $MODDIR"
+    mkdir -p "$MODDIR"
+    cp -v acer_ec_core.ko acer_fanctl.ko "$MODDIR/"
+    if [ -f acer_ec_debug.ko ]; then
+        cp -v acer_ec_debug.ko "$MODDIR/"
+    fi
+    if [ -f acer_wmi_extras.ko ]; then
+        cp -v acer_wmi_extras.ko "$MODDIR/"
+    fi
+    depmod -a
 fi
-if [ -f acer_wmi_extras.ko ]; then
-    cp -v acer_wmi_extras.ko "$MODDIR/"
-fi
-depmod -a
 
 # ---- 4. Modprobe config ----
+# Default EC profile 4=gaming: identical to the other profiles at idle,
+# maximum fan headroom under sustained load (validated on A715-79G).
 cat > "$PROBE_D/acer-ec.conf" <<'CONF'
 # acer-ec — module load order + default profile
 softdep acer_fanctl pre: acer_ec_core
-options acer_fanctl profile_param=2
+options acer_fanctl profile_param=4
 CONF
 echo "Wrote $PROBE_D/acer-ec.conf"
 
@@ -74,12 +90,6 @@ acer_wmi_extras
 CONF
 echo "Wrote $LOAD_D/acer-ec.conf"
 
-# ---- 5b. Install CLI + profile script ----
-cp -v src/acer-ec.sh /usr/local/bin/acer-ec
-chmod +x /usr/local/bin/acer-ec
-cp -v src/profile /usr/local/bin/profile
-chmod +x /usr/local/bin/profile
-
 # ---- 5c. lm_sensors config ----
 mkdir -p /etc/sensors.d
 cat > /etc/sensors.d/acer-ec.conf <<'CONF'
@@ -90,7 +100,23 @@ chip "acer_ec-*"
 CONF
 echo "Wrote /etc/sensors.d/acer-ec.conf"
 
+# ---- 5d. CLI ----
+# Keep /usr/local/bin in sync with the repo script on every install.
+install -m 0755 src/acer-ec.sh /usr/local/bin/acer-ec
+echo "Installed /usr/local/bin/acer-ec"
+
 # ---- 6. Load ----
+# Unload first so a reinstall actually picks up the new build
+# (modprobe alone is a no-op when the old module is already loaded).
+# Each rmmod is guarded: under set -e a single busy-module failure must
+# not abort the installer and strand the machine without fan control —
+# the modprobe lines below must always run.
+for m in acer_wmi_extras acer_fanctl acer_ec_debug acer_ec_core; do
+    if lsmod | grep -q "^$m"; then
+        echo "Unloading old $m..."
+        rmmod "$m" || echo "WARNING: could not unload $m, continuing anyway"
+    fi
+done
 echo "Loading modules..."
 modprobe acer_ec_core
 modprobe acer_fanctl

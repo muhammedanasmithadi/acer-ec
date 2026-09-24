@@ -7,6 +7,8 @@ if [ "$(id -u)" -ne 0 ]; then
     exec sudo "$0" "$@"
 fi
 
+[ -e "$SYS/profile" ] || err "acer_fanctl sysfs not found at $SYS — modules not loaded (run sudo ./install.sh from the acer-ec repo)"
+
 PROFILE_NAMES=(quiet balanced performance gaming)
 
 err() { echo "$1" >&2; exit 1; }
@@ -16,11 +18,20 @@ cmd_status() {
 }
 
 cmd_profile_show() {
+    local cur name
+    cur=$(cat "$SYS"/profile 2>/dev/null || echo 0)
+    case "$cur" in
+        1) name="quiet" ;; 2) name="balanced" ;;
+        3) name="performance" ;; 4) name="gaming" ;;
+        *) name="unknown" ;;
+    esac
+    echo "Current profile: $name ($cur)"
     echo "Profiles: 1=quiet 2=balanced 3=performance 4=gaming"
     echo "Usage: acer-ec profile <1-4|name>"
 }
 
 cmd_profile_set() {
+    local want got
     case "$1" in
         1|quiet)     val=1 ;;
         2|balanced)  val=2 ;;
@@ -29,6 +40,11 @@ cmd_profile_set() {
         *)           err "Invalid profile. Use 1-4 or: quiet balanced performance gaming" ;;
     esac
     echo "$val" > "$SYS"/profile
+    want="$val"
+    got=$(cat "$SYS"/profile 2>/dev/null || echo 0)
+    if [ "$got" != "$want" ]; then
+        err "Profile write failed to land in EC (wanted $want, EC reports $got)"
+    fi
     echo "Profile set to ${PROFILE_NAMES[$val-1]} ($val)"
 }
 

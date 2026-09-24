@@ -6,14 +6,11 @@
 #include <linux/init.h>
 #include <linux/debugfs.h>
 #include <linux/uaccess.h>
-#include <linux/io.h>
 #include "acer_ec_core.h"
 
-#define SYSMEM_PHYS 0xFE0B0100UL
-#define SYSMEM_SIZE 0x100
-
-static void __iomem *sysmem_base;
 static struct dentry *df_root;
+
+#define EC_SIZE 0x100
 
 static ssize_t reg8_read(struct file *filp, char __user *buf,
 			 size_t count, loff_t *pos)
@@ -26,9 +23,9 @@ static ssize_t reg8_read(struct file *filp, char __user *buf,
 		return 0;
 	if (sscanf(filp->f_path.dentry->d_name.name, "reg8_%hx", &off) != 1)
 		return -EINVAL;
-	if (off >= SYSMEM_SIZE)
+	if (off >= EC_SIZE)
 		return -ERANGE;
-	val = ioread8(sysmem_base + off);
+	val = ec_core_read8(off);
 	snprintf(tmp, sizeof(tmp), "0x%02x (%u)\n", val, val);
 	return simple_read_from_buffer(buf, count, pos, tmp, strlen(tmp));
 }
@@ -44,9 +41,9 @@ static ssize_t reg16_read(struct file *filp, char __user *buf,
 		return 0;
 	if (sscanf(filp->f_path.dentry->d_name.name, "reg16_%hx", &off) != 1)
 		return -EINVAL;
-	if (off >= SYSMEM_SIZE - 1)
+	if (off >= EC_SIZE - 1)
 		return -ERANGE;
-	val = ioread16(sysmem_base + off);
+	val = ec_core_read16(off);
 	snprintf(tmp, sizeof(tmp), "0x%04x (%u)\n", val, val);
 	return simple_read_from_buffer(buf, count, pos, tmp, strlen(tmp));
 }
@@ -63,34 +60,52 @@ static ssize_t dump_read(struct file *filp, char __user *buf,
 	tmp = kmalloc(4096, GFP_KERNEL);
 	if (!tmp)
 		return -ENOMEM;
-	for (i = 0; i < SYSMEM_SIZE; i += 16) {
-		int j;
-		n += snprintf(tmp + n, 4096 - n, "%02x: ", i);
-		for (j = 0; j < 16 && i + j < SYSMEM_SIZE; j++)
-			n += snprintf(tmp + n, 4096 - n, "%02x ",
-				      ioread8(sysmem_base + i + j));
-		n += snprintf(tmp + n, 4096 - n, "\n");
+	for (i = 0; i < EC_SIZE; i += 16) {
+		int j, w;
+		size_t avail;
+
+		if ((size_t)n >= 4096 - 64)
+			break;
+		avail = 4096 - n;
+		w = snprintf(tmp + n, avail, "%02x: ", i);
+		if (w < 0 || (size_t)w >= avail)
+			break;
+		n += w;
+		for (j = 0; j < 16 && i + j < EC_SIZE; j++) {
+			avail = 4096 - n;
+			w = snprintf(tmp + n, avail, "%02x ",
+				      ec_core_read8(i + j));
+			if (w < 0 || (size_t)w >= avail)
+				break;
+			n += w;
+		}
+		if ((size_t)n >= 4096 - 2)
+			break;
+		tmp[n++] = '\n';
 	}
 	ret = simple_read_from_buffer(buf, count, pos, tmp, n);
 	kfree(tmp);
 	return ret;
 }
 
-static const struct file_operations reg8_fops = { .read = reg8_read };
-static const struct file_operations reg16_fops = { .read = reg16_read };
-static const struct file_operations dump_fops = { .read = dump_read };
+static const struct file_operations reg8_fops = {
+	.owner = THIS_MODULE,
+	.read = reg8_read,
+};
+static const struct file_operations reg16_fops = {
+	.owner = THIS_MODULE,
+	.read = reg16_read,
+};
+static const struct file_operations dump_fops = {
+	.owner = THIS_MODULE,
+	.read = dump_read,
+};
 
 static int __init acer_ec_debug_init(void)
 {
-	sysmem_base = ioremap(SYSMEM_PHYS, SYSMEM_SIZE);
-	if (!sysmem_base)
-		return -ENOMEM;
-
 	df_root = debugfs_create_dir("acer_ec", NULL);
-	if (!df_root) {
-		iounmap(sysmem_base);
+	if (IS_ERR_OR_NULL(df_root))
 		return -ENOMEM;
-	}
 
 	debugfs_create_file("reg8_00", 0444, df_root, NULL, &reg8_fops);
 	debugfs_create_file("reg8_07", 0444, df_root, NULL, &reg8_fops);
@@ -114,7 +129,6 @@ static int __init acer_ec_debug_init(void)
 static void __exit acer_ec_debug_exit(void)
 {
 	debugfs_remove_recursive(df_root);
-	iounmap(sysmem_base);
 	pr_info("unloaded\n");
 }
 
