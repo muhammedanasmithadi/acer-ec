@@ -120,6 +120,9 @@ done
 echo "Loading modules..."
 modprobe acer_ec_core
 modprobe acer_fanctl
+# extras provides the camera key + WMI event log; reload it too, since the
+# unload loop above removes it (modules-load.d only applies at boot).
+modprobe acer_wmi_extras
 
 echo "=== Done ==="
 echo "Status:"

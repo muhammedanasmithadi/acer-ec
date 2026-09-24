@@ -101,7 +101,7 @@ Evidence:
 
 Workaround (verified working):
 Loader applies SCMD(0x69, BIT(2-1)) = balanced profile at boot. Fans then
-run ~1300 RPM idle and ramp under heavy sustained all-core load
+run ~2700 RPM idle and ramp under heavy sustained all-core load
 (partial-core loads do not move the fan — measured); automatic on every
 boot.
 
@@ -131,10 +131,11 @@ idle (60-75 C); on Windows they are presumably activated by the NitroSense
 driver via the EC profile command (unverified).
 
 Reverse-engineering of the platform (DSDT + register experiments) shows the
-EC selects its fan profile through the \\_SB.WMI SCMD ACPI method:
-  SCMD(0x69, BIT(profile-1))  profile: 1=quiet 2=balanced 4=performance 8=gaming
-Setting profile=balanced at boot restores automatic fan control (verified
-on 7.1.13 and 7.2.5: ~1300 RPM idle, ramps under heavy sustained all-core
+EC selects its fan profile through the \_SB.WMI SCMD ACPI method:
+  SCMD(0x69, BIT(profile-1)) with profile numbers 1-4 mapping to bit
+  values 1/2/4/8: 1=quiet 2=balanced 3=performance 4=gaming
+Setting a profile at boot restores automatic fan control (verified
+on 7.1.13 and 7.2.5: ~2700 RPM idle, ramps under heavy sustained all-core
 load; partial-core loads do not move the fan on any profile).
 
 Proposal:

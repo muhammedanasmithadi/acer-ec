@@ -215,18 +215,24 @@ Controlled A/B across profiles 2/3/4 — same machine, same loads:
 
 | Condition | dut1 | Fan1 RPM | EC TMP | Package |
 |---|---|---|---|---|
-| Idle, any profile | 71 | ~1370 | 70–73°C | 69–73°C |
-| 2-core load 20 s, profile 3 | 71 (frozen) | ~1370 | 96°C | 94–96°C |
-| 4-core load 24 s, profile 4 | 71 (frozen) | ~1370 | 96°C | 94–96°C |
-| ~10-core sustained load, profile 2 | ramped | 2467 (single observation during a package update, not a controlled run) | — | 96°C |
+| Idle, any profile | 71 | ~2700 | 70–73°C | 69–73°C |
+| 2-core load 20 s, profile 3 | 71 (frozen) | ~2700 | 96°C | 94–96°C |
+| 4-core load 24 s, profile 4 | 71 (frozen) | ~2700 | 96°C | 94–96°C |
+| 8-core load 30 s, profile 4 | 71 (frozen) | ~2700 | 95°C | 94–96°C |
+| 8-core load 30 s, profile 2 | 71 (frozen) | ~2700 | 95–96°C | 95–96°C |
+| ~10-core sustained load, profile 2 | ramped | ~4900 (single observation during a package update, not a controlled run) | — | 96°C |
 
 Findings:
 
-- The EC **does not ramp the CPU fan for partial-core loads on any
-  profile** — duty stays at 71 even with its own sensor at 96°C.
-- It **does ramp under heavy sustained all-core load** (2467 RPM observed).
-- Profiles are hints to the EC's internal curve, not commands; in the
-  partial-load regime all three tested profiles behave identically.
+- The EC **does not ramp the CPU fan for any load on any profile
+  within 30 s** — duty stays at 71 with its own sensor at 95–96°C,
+  across 2/3/4-core and 8-core tests on profiles 2, 3 and 4.
+- Profiles are indistinguishable on all measured timescales. The only
+  observed ramp is minutes-long sustained all-core load, which no
+  longer separates profile curves from EC hysteresis — SCMD 0x69's
+  practical effect is unmeasurable.
+- The EC retains its profile across S3 suspend/resume (verified:
+  duty/RPM/profile identical after a sleep cycle) — no sleep hook needed.
 
 > Supersedes earlier single-sample readings (12,330 / 15,600 RPM): those
 > exceed plausible blower speeds and were likely tach-transition glitches,
