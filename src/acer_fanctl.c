@@ -6,15 +6,39 @@
 #include <linux/init.h>
 #include <linux/sysfs.h>
 #include <linux/kobject.h>
+#include <linux/mutex.h>
 #include <linux/hwmon.h>
 #include <linux/hwmon-sysfs.h>
 #include <linux/err.h>
 #include "acer_ec_core.h"
 
-#define DRV_NAME "acer_fanctl"
+/*
+ * EC SystemMemory map (base 0xFE0B0100, see acer_ec_core).
+ * Offsets from DSDT + live register testing; full layout in
+ * docs/reverse-engineering.md. RPM3 sits above RPM4 in the address
+ * space — that matches the firmware layout, not a typo.
+ */
+#define EC_REG_TMP	0x07
+#define EC_REG_DUT1	0xCE
+#define EC_REG_DUT2	0xCF
+#define EC_REG_RPM1	0xD0
+#define EC_REG_RPM2	0xD2
+#define EC_REG_RPM4	0xD4
+#define EC_REG_RPM3	0xE0
+
+/* SCMD command IDs (\\_SB.WMI SCMD dispatcher) */
+#define SCMD_WRITE_DUTY	0x68
+#define SCMD_SET_PROFILE	0x69
 
 static struct kobject *fan_kobj;
 static struct device *hwmon_dev;
+
+/*
+ * Serializes profile switches and duty read-modify-writes against each
+ * other, and guards current_profile. (ec_core_scmd has its own inner
+ * lock; acquisition order is always fanctl_lock -> scmd_lock.)
+ */
+static DEFINE_MUTEX(fanctl_lock);
 
 /*
  * Tach constant 120,000,000 — the EC counts both edges of the tach
@@ -42,26 +66,27 @@ static ssize_t name##_show(struct kobject *kobj, struct kobj_attribute *attr, ch
 
 #define FAN_SHOW16_RPM(name, off) \
 static ssize_t name##_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf) \
-{ return sysfs_emit(buf, "%u\n", (unsigned)raw_to_rpm(ec_core_read16(off))); }
+{ return sysfs_emit(buf, "%u\n", (unsigned int)raw_to_rpm(ec_core_read16(off))); }
 
-FAN_SHOW8(fan1_duty, 0xCE)
-FAN_SHOW8(fan2_duty, 0xCF)
-FAN_SHOW16_RPM(fan1_rpm, 0xD0)
-FAN_SHOW16_RPM(fan2_rpm, 0xD2)
-FAN_SHOW16_RPM(fan4_rpm, 0xD4)
-FAN_SHOW16_RPM(fan3_rpm, 0xE0)
+FAN_SHOW8(fan1_duty, EC_REG_DUT1)
+FAN_SHOW8(fan2_duty, EC_REG_DUT2)
+FAN_SHOW16_RPM(fan1_rpm, EC_REG_RPM1)
+FAN_SHOW16_RPM(fan2_rpm, EC_REG_RPM2)
+FAN_SHOW16_RPM(fan4_rpm, EC_REG_RPM4)
+FAN_SHOW16_RPM(fan3_rpm, EC_REG_RPM3)
 FAN_SHOW8(dthl_val, 0xD7)
 FAN_SHOW8(dtbp_val, 0xD8)
 FAN_SHOW8(airp_val, 0xD9)
 FAN_SHOW8(winf_val, 0xDA)
 FAN_SHOW8(rinf_val, 0xDB)
-FAN_SHOW8(tmp_temp, 0x07)
+FAN_SHOW8(tmp_temp, EC_REG_TMP)
 
 /* --- sysfs: profile (1-4) --- */
 /*
  * Last profile successfully requested via SCMD (0 = unknown, e.g. the
  * init-time SCMD failed). The show side reports this value — not a
  * static legend — so userspace can verify a switch landed in the EC.
+ * Guarded by fanctl_lock.
  */
 static int current_profile;
 
@@ -69,37 +94,78 @@ static ssize_t profile_store(struct kobject *kobj, struct kobj_attribute *attr,
 			     const char *buf, size_t count)
 {
 	u32 val;
-	int ret = kstrtou32(buf, 0, &val);
-	if (ret) return ret;
-	if (val < 1 || val > 4) return -EINVAL;
-	ret = ec_core_scmd(0x69, BIT(val - 1), 0, 0, 0);
-	if (ret) return ret;
+	int ret;
+
+	ret = kstrtou32(buf, 0, &val);
+	if (ret)
+		return ret;
+	if (val < 1 || val > 4)
+		return -EINVAL;
+
+	mutex_lock(&fanctl_lock);
+	ret = ec_core_scmd(SCMD_SET_PROFILE, BIT(val - 1), 0, 0, 0);
+	if (ret) {
+		mutex_unlock(&fanctl_lock);
+		return ret;
+	}
 	current_profile = val;
+	mutex_unlock(&fanctl_lock);
+
 	return count;
 }
 
 static ssize_t profile_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
-	return sysfs_emit(buf, "%d\n", current_profile);
+	int profile;
+
+	mutex_lock(&fanctl_lock);
+	profile = current_profile;
+	mutex_unlock(&fanctl_lock);
+
+	return sysfs_emit(buf, "%d\n", profile);
 }
 
-/* --- sysfs: fan2_duty_set (0-255) --- */
+/* --- sysfs: duty_set (0-255) --- */
 /*
  * Read-modify-write is MANDATORY here: SCMD 0x68 programs both fan
  * channels in one call. A previous revision sent byte0=0, which latched
  * the CPU channel to 0 and stopped the CPU fan (verified live — package
  * kept climbing with rpm1=0 until CoolerBoost was cycled). Always
  * preserve the channel we are not changing.
+ *
+ * The read and the SCMD run under fanctl_lock so two concurrent
+ * writers cannot interleave into a torn channel pair.
  */
+static int ec_set_duty(bool cpu_channel, u8 val)
+{
+	u8 dut1, dut2;
+	int ret;
+
+	mutex_lock(&fanctl_lock);
+	dut1 = cpu_channel ? val : ec_core_read8(EC_REG_DUT1);
+	dut2 = cpu_channel ? ec_core_read8(EC_REG_DUT2) : val;
+	ret = ec_core_scmd(SCMD_WRITE_DUTY, dut1, dut2, 0, 0);
+	mutex_unlock(&fanctl_lock);
+
+	return ret;
+}
+
 static ssize_t fan2_duty_set_store(struct kobject *kobj, struct kobj_attribute *attr,
 				   const char *buf, size_t count)
 {
 	u32 val;
-	int ret = kstrtou32(buf, 0, &val);
-	if (ret) return ret;
-	if (val > 255) return -EINVAL;
-	ret = ec_core_scmd(0x68, ec_core_read8(0xCE), val, 0, 0);
-	if (ret) return ret;
+	int ret;
+
+	ret = kstrtou32(buf, 0, &val);
+	if (ret)
+		return ret;
+	if (val > 255)
+		return -EINVAL;
+
+	ret = ec_set_duty(false, val);
+	if (ret)
+		return ret;
+
 	return count;
 }
 
@@ -115,23 +181,30 @@ static ssize_t fan1_duty_set_store(struct kobject *kobj, struct kobj_attribute *
 				   const char *buf, size_t count)
 {
 	u32 val;
-	int ret = kstrtou32(buf, 0, &val);
-	if (ret) return ret;
-	if (val > 255) return -EINVAL;
-	ret = ec_core_scmd(0x68, val, ec_core_read8(0xCF), 0, 0);
-	if (ret) return ret;
+	int ret;
+
+	ret = kstrtou32(buf, 0, &val);
+	if (ret)
+		return ret;
+	if (val > 255)
+		return -EINVAL;
+
+	ret = ec_set_duty(true, val);
+	if (ret)
+		return ret;
+
 	return count;
 }
 
 /* --- sysfs: dump all values at once --- */
 static ssize_t all_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
-	u8 dut1 = ec_core_read8(0xCE);
-	u8 dut2 = ec_core_read8(0xCF);
-	u16 raw1 = ec_core_read16(0xD0);
-	u16 raw2 = ec_core_read16(0xD2);
-	u16 raw3 = ec_core_read16(0xE0);
-	u16 raw4 = ec_core_read16(0xD4);
+	u8 dut1 = ec_core_read8(EC_REG_DUT1);
+	u8 dut2 = ec_core_read8(EC_REG_DUT2);
+	u16 raw1 = ec_core_read16(EC_REG_RPM1);
+	u16 raw2 = ec_core_read16(EC_REG_RPM2);
+	u16 raw3 = ec_core_read16(EC_REG_RPM3);
+	u16 raw4 = ec_core_read16(EC_REG_RPM4);
 	u16 rpm1 = raw_to_rpm(raw1);
 	u16 rpm2 = raw_to_rpm(raw2);
 	u16 rpm3 = raw_to_rpm(raw3);
@@ -141,8 +214,13 @@ static ssize_t all_show(struct kobject *kobj, struct kobj_attribute *attr, char 
 	u8 airp = ec_core_read8(0xD9);
 	u8 winf = ec_core_read8(0xDA);
 	u8 rinf = ec_core_read8(0xDB);
-	u8 tmp  = ec_core_read8(0x07);
+	u8 tmp  = ec_core_read8(EC_REG_TMP);
+	int profile;
 	int len = 0;
+
+	mutex_lock(&fanctl_lock);
+	profile = current_profile;
+	mutex_unlock(&fanctl_lock);
 
 	/*
 	 * NOTE: multi-part output must use sysfs_emit_at(), not
@@ -158,7 +236,7 @@ static ssize_t all_show(struct kobject *kobj, struct kobj_attribute *attr, char 
 	len += sysfs_emit_at(buf, len, "dthl=%d dtbp=%d airp=%d winf=%d rinf=%d\n",
 			      dthl, dtbp, airp, winf, rinf);
 	len += sysfs_emit_at(buf, len, "tmp=%d\n", tmp);
-	len += sysfs_emit_at(buf, len, "profile=%d\n", current_profile);
+	len += sysfs_emit_at(buf, len, "profile=%d\n", profile);
 	return len;
 }
 
@@ -179,7 +257,7 @@ static struct kobj_attribute fan2_duty_set_attr = __ATTR_WO(fan2_duty_set);
 static struct kobj_attribute fan1_duty_set_attr = __ATTR_WO(fan1_duty_set);
 static struct kobj_attribute all_attr = __ATTR_RO(all);
 
-static struct attribute *attrs[] = {
+static struct attribute *acer_fanctl_attrs[] = {
 	&fan1_duty_attr.attr,
 	&fan2_duty_attr.attr,
 	&fan1_rpm_attr.attr,
@@ -198,30 +276,41 @@ static struct attribute *attrs[] = {
 	&all_attr.attr,
 	NULL,
 };
-
-static struct attribute_group attr_group = {
-	.attrs = attrs,
-};
+ATTRIBUTE_GROUPS(acer_fanctl);
 
 /* --- hwmon interface (lm_sensors) --- */
+enum acer_hwmon_channel {
+	ACER_HWMON_TEMP = 0,
+	ACER_HWMON_FAN1,
+	ACER_HWMON_FAN2,
+};
+
 static ssize_t acer_hwmon_val_show(struct device *dev,
 				   struct device_attribute *attr, char *buf)
 {
-	long val = 0;
+	struct sensor_device_attribute_2 *sattr = to_sensor_dev_attr_2(attr);
+	long val;
 
-	if (strcmp(attr->attr.name, "temp1_input") == 0)
-		val = ec_core_read8(0x07) * 1000;
-	else if (strcmp(attr->attr.name, "fan1_input") == 0)
-		val = raw_to_rpm(ec_core_read16(0xD0));
-	else if (strcmp(attr->attr.name, "fan2_input") == 0)
-		val = raw_to_rpm(ec_core_read16(0xD2));
+	switch (sattr->nr) {
+	case ACER_HWMON_TEMP:
+		val = ec_core_read8(EC_REG_TMP) * 1000;
+		break;
+	case ACER_HWMON_FAN1:
+		val = raw_to_rpm(ec_core_read16(EC_REG_RPM1));
+		break;
+	case ACER_HWMON_FAN2:
+		val = raw_to_rpm(ec_core_read16(EC_REG_RPM2));
+		break;
+	default:
+		return -EINVAL;
+	}
 
-	return sprintf(buf, "%ld\n", val);
+	return sysfs_emit(buf, "%ld\n", val);
 }
 
-static SENSOR_DEVICE_ATTR_RO(temp1_input, acer_hwmon_val, 0);
-static SENSOR_DEVICE_ATTR_RO(fan1_input, acer_hwmon_val, 0);
-static SENSOR_DEVICE_ATTR_RO(fan2_input, acer_hwmon_val, 0);
+static SENSOR_DEVICE_ATTR_2_RO(temp1_input, acer_hwmon_val, ACER_HWMON_TEMP, 0);
+static SENSOR_DEVICE_ATTR_2_RO(fan1_input, acer_hwmon_val, ACER_HWMON_FAN1, 0);
+static SENSOR_DEVICE_ATTR_2_RO(fan2_input, acer_hwmon_val, ACER_HWMON_FAN2, 0);
 
 static struct attribute *acer_hwmon_attrs[] = {
 	&sensor_dev_attr_temp1_input.dev_attr.attr,
@@ -251,14 +340,15 @@ static int __init acer_fanctl_init(void)
 	if (!fan_kobj)
 		return -ENOMEM;
 
-	ret = sysfs_create_group(fan_kobj, &attr_group);
+	ret = sysfs_create_groups(fan_kobj, acer_fanctl_groups);
 	if (ret) {
 		kobject_put(fan_kobj);
 		return ret;
 	}
 
 	if (profile_param >= 1 && profile_param <= 4) {
-		ret = ec_core_scmd(0x69, BIT(profile_param - 1), 0, 0, 0);
+		ret = ec_core_scmd(SCMD_SET_PROFILE, BIT(profile_param - 1), 0, 0, 0);
+		mutex_lock(&fanctl_lock);
 		if (ret) {
 			pr_err("failed to apply initial profile %d (err %d), EC keeps firmware default\n",
 			       profile_param, ret);
@@ -266,10 +356,15 @@ static int __init acer_fanctl_init(void)
 		} else {
 			current_profile = profile_param;
 		}
+		ret = current_profile;
+		mutex_unlock(&fanctl_lock);
 	} else {
 		pr_warn("invalid profile_param=%d, EC keeps firmware default\n",
 			profile_param);
+		mutex_lock(&fanctl_lock);
 		current_profile = 0;
+		ret = 0;
+		mutex_unlock(&fanctl_lock);
 	}
 
 	hwmon_dev = hwmon_device_register_with_groups(NULL, "acer_ec",
@@ -280,7 +375,7 @@ static int __init acer_fanctl_init(void)
 		hwmon_dev = NULL;
 	}
 
-	pr_info("loaded (profile=%d) - see /sys/kernel/acer_fanctl/\n", current_profile);
+	pr_info("loaded (profile=%d) - see /sys/kernel/acer_fanctl/\n", ret);
 	return 0;
 }
 
@@ -288,7 +383,7 @@ static void __exit acer_fanctl_exit(void)
 {
 	if (hwmon_dev)
 		hwmon_device_unregister(hwmon_dev);
-	sysfs_remove_group(fan_kobj, &attr_group);
+	sysfs_remove_groups(fan_kobj, acer_fanctl_groups);
 	kobject_put(fan_kobj);
 	pr_info("unloaded\n");
 }
