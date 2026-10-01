@@ -46,7 +46,7 @@ static void acer_wmi_extras_notify(struct wmi_device *wdev, union acpi_object *d
 	if (data->type == ACPI_TYPE_INTEGER)
 		val = data->integer.value;
 
-	dev_dbg(&wdev->dev, "event: type=%d val=%d\n", data->type, val);
+	dev_dbg(&wdev->dev, "event: type=%d val=%u\n", data->type, val);
 
 	/*
 	 * Only the webcam GUID's notifications map to KEY_CAMERA. The
