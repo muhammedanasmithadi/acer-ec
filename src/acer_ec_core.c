@@ -12,11 +12,20 @@
 #define SYSMEM_PHYS 0xFE0B0100UL
 #define SYSMEM_SIZE 0x100
 
+/*
+ * DSDT provenance: \_SB_.PCI0.LPC0.EC0_.RAM is a 256-byte SystemMemory
+ * OperationRegion at this address. The EC firmware mirrors live state
+ * (temperature, duties, tach periods) here; the ACPI ECMD method behind
+ * ec_core_scmd is the only write path that sticks (direct MMIO writes
+ * are overwritten by firmware within ~500ms).
+ */
+
 static void __iomem *sysmem_base;
 static acpi_handle wmi_handle;
 
 /* Serializes SCMD calls: the ACPI EC method behind SCMD is not
- * re-entrant, and concurrent sysfs writers must not interleave. */
+ * re-entrant, and concurrent sysfs writers must not interleave.
+ */
 static DEFINE_MUTEX(scmd_lock);
 
 static bool sysmem_ok;
@@ -97,6 +106,7 @@ static const struct dmi_system_id acer_ec_dmi_table[] __initconst = {
 	},
 	{ }
 };
+MODULE_DEVICE_TABLE(dmi, acer_ec_dmi_table);
 
 static int __init acer_ec_core_init(void)
 {
@@ -107,9 +117,16 @@ static int __init acer_ec_core_init(void)
 		return -ENODEV;
 	}
 
+	if (!request_mem_region(SYSMEM_PHYS, SYSMEM_SIZE, KBUILD_MODNAME)) {
+		pr_err("SystemMemory 0x%lx busy — check /proc/iomem for a conflicting driver\n",
+		       SYSMEM_PHYS);
+		return -EBUSY;
+	}
+
 	sysmem_base = ioremap(SYSMEM_PHYS, SYSMEM_SIZE);
 	if (!sysmem_base) {
 		pr_err("ioremap(0x%lx, 0x%x) failed\n", SYSMEM_PHYS, SYSMEM_SIZE);
+		release_mem_region(SYSMEM_PHYS, SYSMEM_SIZE);
 		return -ENOMEM;
 	}
 	sysmem_ok = true;
@@ -130,8 +147,10 @@ static int __init acer_ec_core_init(void)
 
 static void __exit acer_ec_core_exit(void)
 {
-	if (sysmem_ok)
+	if (sysmem_ok) {
 		iounmap(sysmem_base);
+		release_mem_region(SYSMEM_PHYS, SYSMEM_SIZE);
+	}
 	sysmem_ok = false;
 	wmi_ok = false;
 	pr_info("unloaded\n");
