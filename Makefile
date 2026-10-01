@@ -25,6 +25,8 @@ acer_wmi_extras-objs := src/acer_wmi_extras.o
 
 ccflags-y := -I$(src)/src
 
+INSTALL_MOD_DIR := extra
+
 else
 
 KDIR ?= /lib/modules/$(shell uname -r)/build
