@@ -15,8 +15,9 @@ static struct dentry *df_root;
 
 /*
  * Read-only EC SystemMemory explorer. Each register file carries its
- * offset in private_data (set at creation); nothing parses dentries.
- * Offsets mirror the fanctl map — see docs/reverse-engineering.md.
+ * offset in the dentry's i_private (set at creation via the data
+ * pointer); nothing parses dentries. Offsets mirror the fanctl map —
+ * see docs/reverse-engineering.md.
  */
 struct ec_dbg_reg {
 	const char *name;
