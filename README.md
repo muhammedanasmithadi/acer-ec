@@ -158,6 +158,7 @@ acer-ec/
 ├── README.md
 └── docs/
     ├── reverse-engineering.md
+    ├── verification.md
     └── upstream/
         └── acer-wmi-support-request.md
 ```
