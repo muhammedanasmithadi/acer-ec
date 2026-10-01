@@ -12,40 +12,65 @@ static struct dentry *df_root;
 
 #define EC_SIZE 0x100
 
+/*
+ * Read-only EC SystemMemory explorer. Each register file carries its
+ * offset in private_data (set at creation); nothing parses dentries.
+ * Offsets mirror the fanctl map — see docs/reverse-engineering.md.
+ */
+struct ec_dbg_reg {
+	const char *name;
+	u16 offset;
+	bool wide;
+};
+
+static const struct ec_dbg_reg ec_dbg_regs[] = {
+	{ "reg8_00", 0x00, false },
+	{ "reg8_07", 0x07, false },	/* TMP: ACPI temperature */
+	{ "reg8_CE", 0xCE, false },	/* DUT1: fan 1 EC state */
+	{ "reg8_CF", 0xCF, false },	/* DUT2: fan 2 EC state */
+	{ "reg8_D7", 0xD7, false },
+	{ "reg8_D8", 0xD8, false },
+	{ "reg8_D9", 0xD9, false },
+	{ "reg8_DA", 0xDA, false },
+	{ "reg8_DB", 0xDB, false },
+	{ "reg16_D0", 0xD0, true },	/* RPM1 tach period */
+	{ "reg16_D2", 0xD2, true },	/* RPM2 tach period */
+	{ "reg16_E0", 0xE0, true },	/* RPM3 (unused) */
+	{ "reg16_D4", 0xD4, true },	/* RPM4 (unused) */
+};
+
+static ssize_t reg_read(struct file *filp, char __user *buf,
+			size_t count, loff_t *pos, bool wide)
+{
+	char tmp[16];
+	u16 off = (u16)(uintptr_t)filp->private_data;
+	size_t len;
+
+	if (off >= (wide ? EC_SIZE - 1 : EC_SIZE))
+		return -ERANGE;
+
+	if (wide) {
+		u16 val = ec_core_read16(off);
+
+		len = scnprintf(tmp, sizeof(tmp), "0x%04x (%u)\n", val, val);
+	} else {
+		u8 val = ec_core_read8(off);
+
+		len = scnprintf(tmp, sizeof(tmp), "0x%02x (%u)\n", val, val);
+	}
+	return simple_read_from_buffer(buf, count, pos, tmp, len);
+}
+
 static ssize_t reg8_read(struct file *filp, char __user *buf,
 			 size_t count, loff_t *pos)
 {
-	char tmp[16];
-	u16 off;
-	u8 val;
-
-	if (*pos != 0)
-		return 0;
-	if (sscanf(filp->f_path.dentry->d_name.name, "reg8_%hx", &off) != 1)
-		return -EINVAL;
-	if (off >= EC_SIZE)
-		return -ERANGE;
-	val = ec_core_read8(off);
-	snprintf(tmp, sizeof(tmp), "0x%02x (%u)\n", val, val);
-	return simple_read_from_buffer(buf, count, pos, tmp, strlen(tmp));
+	return reg_read(filp, buf, count, pos, false);
 }
 
 static ssize_t reg16_read(struct file *filp, char __user *buf,
 			  size_t count, loff_t *pos)
 {
-	char tmp[16];
-	u16 off;
-	u16 val;
-
-	if (*pos != 0)
-		return 0;
-	if (sscanf(filp->f_path.dentry->d_name.name, "reg16_%hx", &off) != 1)
-		return -EINVAL;
-	if (off >= EC_SIZE - 1)
-		return -ERANGE;
-	val = ec_core_read16(off);
-	snprintf(tmp, sizeof(tmp), "0x%04x (%u)\n", val, val);
-	return simple_read_from_buffer(buf, count, pos, tmp, strlen(tmp));
+	return reg_read(filp, buf, count, pos, true);
 }
 
 static ssize_t dump_read(struct file *filp, char __user *buf,
@@ -55,8 +80,6 @@ static ssize_t dump_read(struct file *filp, char __user *buf,
 	int i, n = 0;
 	ssize_t ret;
 
-	if (*pos != 0)
-		return 0;
 	tmp = kmalloc(4096, GFP_KERNEL);
 	if (!tmp)
 		return -ENOMEM;
@@ -103,24 +126,28 @@ static const struct file_operations dump_fops = {
 
 static int __init acer_ec_debug_init(void)
 {
+	struct dentry *f;
+	int i;
+
 	df_root = debugfs_create_dir("acer_ec", NULL);
 	if (IS_ERR_OR_NULL(df_root))
 		return -ENOMEM;
 
-	debugfs_create_file("reg8_00", 0444, df_root, NULL, &reg8_fops);
-	debugfs_create_file("reg8_07", 0444, df_root, NULL, &reg8_fops);
-	debugfs_create_file("reg8_CE", 0444, df_root, NULL, &reg8_fops);
-	debugfs_create_file("reg8_CF", 0444, df_root, NULL, &reg8_fops);
-	debugfs_create_file("reg8_D7", 0444, df_root, NULL, &reg8_fops);
-	debugfs_create_file("reg8_D8", 0444, df_root, NULL, &reg8_fops);
-	debugfs_create_file("reg8_D9", 0444, df_root, NULL, &reg8_fops);
-	debugfs_create_file("reg8_DA", 0444, df_root, NULL, &reg8_fops);
-	debugfs_create_file("reg8_DB", 0444, df_root, NULL, &reg8_fops);
-	debugfs_create_file("reg16_D0", 0444, df_root, NULL, &reg16_fops);
-	debugfs_create_file("reg16_D2", 0444, df_root, NULL, &reg16_fops);
-	debugfs_create_file("reg16_E0", 0444, df_root, NULL, &reg16_fops);
-	debugfs_create_file("reg16_D4", 0444, df_root, NULL, &reg16_fops);
-	debugfs_create_file("dump", 0444, df_root, NULL, &dump_fops);
+	for (i = 0; i < ARRAY_SIZE(ec_dbg_regs); i++) {
+		f = debugfs_create_file(ec_dbg_regs[i].name, 0444, df_root,
+					(void *)(uintptr_t)ec_dbg_regs[i].offset,
+					ec_dbg_regs[i].wide ? &reg16_fops : &reg8_fops);
+		if (IS_ERR(f)) {
+			debugfs_remove_recursive(df_root);
+			return PTR_ERR(f);
+		}
+	}
+
+	f = debugfs_create_file("dump", 0444, df_root, NULL, &dump_fops);
+	if (IS_ERR(f)) {
+		debugfs_remove_recursive(df_root);
+		return PTR_ERR(f);
+	}
 
 	pr_info("loaded — see /sys/kernel/debug/acer_ec/\n");
 	return 0;
