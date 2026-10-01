@@ -1,8 +1,17 @@
+# Kernel out-of-tree build outputs
 *.o
 *.ko
+*.mod
 *.mod.c
 *.mod.o
-*.mod
+*.order
+*.symvers
+*.cmd
+.*.cmd
 Module.symvers
 modules.order
-.*.cmd
+.tmp_versions/
+*.d
+
+# Local-only tracker pointer (never commit)
+/.orbit
