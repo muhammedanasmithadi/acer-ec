@@ -123,7 +123,7 @@ static void __exit acer_wmi_extras_exit(void)
 module_init(acer_wmi_extras_init);
 module_exit(acer_wmi_extras_exit);
 
-MODULE_VERSION("0.1");
+MODULE_VERSION("1.0");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Anas");
 MODULE_DESCRIPTION("Acer WMI driver for unclaimed GUIDs");

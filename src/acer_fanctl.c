@@ -296,7 +296,7 @@ static void __exit acer_fanctl_exit(void)
 module_init(acer_fanctl_init);
 module_exit(acer_fanctl_exit);
 
-MODULE_VERSION("0.1");
+MODULE_VERSION("1.0");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Acer Aspire A715-79G community");
 MODULE_DESCRIPTION("Acer A715-79G fan control via acer_ec_core");

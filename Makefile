@@ -1,3 +1,16 @@
+# acer-ec — out-of-tree kernel modules
+#
+# Command-line build:
+#   make [KDIR=/lib/modules/<ver>/build] [W=1]
+#   sudo make modules_install
+#   make check    (checkpatch + shellcheck, skips missing tools)
+#
+# DKMS drives the kbuild half of this file directly
+# (dkms.conf MAKE=), so the defaults below must stay sane
+# when invoked from /lib/modules/<ver>/build with M=<src>.
+
+ifneq ($(KERNELRELEASE),)
+
 obj-m += acer_ec_core.o
 acer_ec_core-objs := src/acer_ec_core.o
 
@@ -12,8 +25,44 @@ acer_wmi_extras-objs := src/acer_wmi_extras.o
 
 ccflags-y := -I$(src)/src
 
-all:
-	$(MAKE) -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules
+else
+
+KDIR ?= /lib/modules/$(shell uname -r)/build
+SRC := $(CURDIR)
+
+all: modules
+
+modules:
+	$(MAKE) -C $(KDIR) M=$(SRC) modules
+
+modules_install:
+	$(MAKE) -C $(KDIR) M=$(SRC) modules_install
 
 clean:
-	$(MAKE) -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
+	$(MAKE) -C $(KDIR) M=$(SRC) clean
+
+help:
+	$(MAKE) -C $(KDIR) M=$(SRC) help
+
+# Static gates. Missing tools are skipped, never fatal.
+# Runs every tool over every file, then fails if anything reported.
+check:
+	@fail=0; \
+	if test -x $(KDIR)/scripts/checkpatch.pl; then \
+		for f in src/*.c; do \
+			echo "== checkpatch: $$f"; \
+			$(KDIR)/scripts/checkpatch.pl --no-tree --file $$f || fail=1; \
+		done; \
+	else \
+		echo "checkpatch.pl not found under $(KDIR), skipping"; \
+	fi; \
+	if command -v shellcheck >/dev/null 2>&1; then \
+		shellcheck -S warning install.sh uninstall.sh src/acer-ec.sh || fail=1; \
+	else \
+		echo "shellcheck not found, skipping"; \
+	fi; \
+	exit $$fail
+
+.PHONY: all modules modules_install clean help check
+
+endif

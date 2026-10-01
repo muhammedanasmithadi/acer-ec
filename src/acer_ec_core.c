@@ -140,7 +140,7 @@ static void __exit acer_ec_core_exit(void)
 module_init(acer_ec_core_init);
 module_exit(acer_ec_core_exit);
 
-MODULE_VERSION("0.1");
+MODULE_VERSION("1.0");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Acer Aspire A715-79G community");
 MODULE_DESCRIPTION("Acer EC core — SystemMemory mapping + ACPI SCMD wrapper");
