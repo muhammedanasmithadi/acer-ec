@@ -41,9 +41,9 @@ if [ -f "$BOOT_CFG" ] && [ -f "$KDEV_CFG" ]; then
 fi
 
 # ---- 1. Remove old monolithic install if present ----
-if lsmod | grep -q "^acer_fanctl"; then
+if lsmod | grep -q "^acer_fanctl "; then
     echo "Removing old acer_fanctl module..."
-    rmmod acer_fanctl
+    rmmod acer_fanctl || echo "WARNING: could not unload acer_fanctl, continuing anyway"
 fi
 if [ -f "$MODDIR/acer_fanctl.ko" ] || [ -f "$MODDIR/acer_fanctl.ko.xz" ]; then
     echo "Cleaning old acer_fanctl.ko from $MODDIR"
@@ -77,6 +77,7 @@ if command -v dkms &>/dev/null; then
             [ "$old_ver" != "$DKMS_VER" ] \
                 && dkms remove -m "$DKMS_PKG" -v "$old_ver" --all 2>/dev/null || true
         done
+    [ -n "$DKMS_PKG" ] || { echo "ERROR: could not parse PACKAGE_NAME from dkms.conf" >&2; exit 1; }
     rm -rf "/var/lib/dkms/$DKMS_PKG"
     dkms add "$PWD"
     dkms build -m "$DKMS_PKG" -v "$DKMS_VER" -k "$KVERSION"
