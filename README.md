@@ -28,8 +28,7 @@ DSDT. Tested on **Fedora 44** with kernel **7.2.5**.
 | `fan2_rpm` | RO | Fan 2 speed (real RPM) |
 | `fan3_rpm` | RO | Always 0 (unused slot) |
 | `fan4_rpm` | RO | Always 0 (unused slot) |
-| `fan1_duty_set` | WO | Write Fan 1 duty (experimental — likely no effect) |
-| `fan2_duty_set` | WO | Write Fan 2 duty (0-255, e.g. `echo 0 > fan2_duty_set`) |
+| `fan2_duty_set` | WO | Write Fan 2 (GPU) duty (0-255, e.g. `echo 0 > fan2_duty_set`) |
 | `tmp_temp` | RO | ACPI temperature (deg C) |
 | `dthl_val` | RO | EC throttle-level value (bitmask, semantics unconfirmed) |
 | `dtbp_val` | RO | EC boost-power value (semantics unconfirmed) |
@@ -162,9 +161,10 @@ acer-ec/
 
 ## Limitations
 
-- **Fan 1 (CPU) is EC-protected.** Manual duty writes via `fan1_duty_set` are
-  accepted but the EC firmware overwrites DUT1 within ~500ms. Use `profile`
-  switching for indirect CPU fan control.
+- **Fan 1 (CPU) has no manual control.** There is deliberately no
+  `fan1_duty_set`: SCMD 0x68 byte0 writes latch the CPU fan off
+  persistently (verified live — profile switching does NOT restore auto
+  control). Use `profile` switching for indirect CPU fan control.
 - **GPU power limiting is not supported on this laptop.** NVIDIA driver 530+
   removed `nvidia-smi -pl` for laptop GPUs, and the Acer BIOS disables
   Dynamic Boost DC controller. The GPU power limit is firmware-managed.

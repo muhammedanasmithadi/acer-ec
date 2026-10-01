@@ -125,26 +125,29 @@ static ssize_t profile_show(struct kobject *kobj, struct kobj_attribute *attr, c
 	return sysfs_emit(buf, "%d\n", profile);
 }
 
-/* --- sysfs: duty_set (0-255) --- */
+/* --- sysfs: fan2_duty_set (0-255, GPU fan only) --- */
 /*
  * Read-modify-write is MANDATORY here: SCMD 0x68 programs both fan
  * channels in one call. A previous revision sent byte0=0, which latched
  * the CPU channel to 0 and stopped the CPU fan (verified live — package
  * kept climbing with rpm1=0 until CoolerBoost was cycled). Always
- * preserve the channel we are not changing.
+ * preserve the CPU channel.
+ *
+ * There is deliberately no fan1_duty_set: SCMD 0x68 byte0 writes latch
+ * the CPU fan off persistently (profile switching does NOT restore
+ * auto control). Removed rather than documented — see git history.
  *
  * The read and the SCMD run under fanctl_lock so two concurrent
  * writers cannot interleave into a torn channel pair.
  */
-static int ec_set_duty(bool cpu_channel, u8 val)
+static int ec_set_gpu_duty(u8 val)
 {
-	u8 dut1, dut2;
+	u8 dut1;
 	int ret;
 
 	mutex_lock(&fanctl_lock);
-	dut1 = cpu_channel ? val : ec_core_read8(EC_REG_DUT1);
-	dut2 = cpu_channel ? ec_core_read8(EC_REG_DUT2) : val;
-	ret = ec_core_scmd(SCMD_WRITE_DUTY, dut1, dut2, 0, 0);
+	dut1 = ec_core_read8(EC_REG_DUT1);
+	ret = ec_core_scmd(SCMD_WRITE_DUTY, dut1, val, 0, 0);
 	mutex_unlock(&fanctl_lock);
 
 	return ret;
@@ -162,34 +165,7 @@ static ssize_t fan2_duty_set_store(struct kobject *kobj, struct kobj_attribute *
 	if (val > 255)
 		return -EINVAL;
 
-	ret = ec_set_duty(false, val);
-	if (ret)
-		return ret;
-
-	return count;
-}
-
-/*
- * fan1_duty_set — DANGEROUS, not just experimental.
- * Verified live: SCMD 0x68 byte0 writes LATCH (they are not overwritten
- * by the EC within 500ms — that assumption was wrong). Writing 0 stops
- * the CPU fan and it stays stopped: profile switching does NOT restore
- * auto control. Recovery is Fn+1 CoolerBoost on/off, or writing a sane
- * duty here. Provided for research; understand the above first.
- */
-static ssize_t fan1_duty_set_store(struct kobject *kobj, struct kobj_attribute *attr,
-				   const char *buf, size_t count)
-{
-	u32 val;
-	int ret;
-
-	ret = kstrtou32(buf, 0, &val);
-	if (ret)
-		return ret;
-	if (val > 255)
-		return -EINVAL;
-
-	ret = ec_set_duty(true, val);
+	ret = ec_set_gpu_duty(val);
 	if (ret)
 		return ret;
 
@@ -254,7 +230,6 @@ static struct kobj_attribute rinf_val_attr = __ATTR_RO(rinf_val);
 static struct kobj_attribute tmp_temp_attr = __ATTR_RO(tmp_temp);
 static struct kobj_attribute profile_attr = __ATTR_RW(profile);
 static struct kobj_attribute fan2_duty_set_attr = __ATTR_WO(fan2_duty_set);
-static struct kobj_attribute fan1_duty_set_attr = __ATTR_WO(fan1_duty_set);
 static struct kobj_attribute all_attr = __ATTR_RO(all);
 
 static struct attribute *acer_fanctl_attrs[] = {
@@ -272,7 +247,6 @@ static struct attribute *acer_fanctl_attrs[] = {
 	&tmp_temp_attr.attr,
 	&profile_attr.attr,
 	&fan2_duty_set_attr.attr,
-	&fan1_duty_set_attr.attr,
 	&all_attr.attr,
 	NULL,
 };
