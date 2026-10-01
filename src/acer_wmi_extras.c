@@ -7,20 +7,31 @@
 #include <linux/device.h>
 #include <linux/input.h>
 #include <linux/acpi.h>
-#include <linux/string.h>
 
 #define ACER_WMI_GUID_WEBCAM "ABBC0F6C-8EA1-11D1-00A0-C90629100000"
 /* 0x6D is the WMI control/event channel (DSDT: WMBB dispatch). Its exact
  * event semantics are not decoded yet, so we only log its notifications
- * and never synthesize input for them. */
+ * and never synthesize input for them.
+ */
 #define ACER_WMI_GUID_EVENT  "ABBC0F6D-8EA1-11D1-00A0-C90629100000"
+
+/*
+ * Binds each GUID to its role at match time. The WMI core passes the
+ * id_table entry's context into probe(), so neither probe() nor the
+ * hot notify() path parses device names or GUID strings.
+ */
+enum acer_wmi_role {
+	ACER_WMI_ROLE_WEBCAM = 1,
+	ACER_WMI_ROLE_EVENT,
+};
 
 static struct input_dev *acer_wmi_extras_input_dev;
 
-/* The wmi_device whose notifications map to KEY_CAMERA, resolved at
- * probe time by matching the device name (which starts with the WMI
- * GUID, e.g. "ABBC0F6C-..."). Pointer comparison at event time avoids
- * any string parsing in the notify path. */
+/*
+ * The webcam GUID's device; its notifications map to KEY_CAMERA.
+ * Set in probe(), cleared in remove() so an unbound device can never
+ * dangle here. Compared by pointer in notify() — no string work.
+ */
 static struct wmi_device *webcam_wdev;
 
 static void acer_wmi_extras_notify(struct wmi_device *wdev, union acpi_object *data)
@@ -35,7 +46,7 @@ static void acer_wmi_extras_notify(struct wmi_device *wdev, union acpi_object *d
 	if (data->type == ACPI_TYPE_INTEGER)
 		val = data->integer.value;
 
-	dev_info(&wdev->dev, "event: type=%d val=%d\n", data->type, val);
+	dev_dbg(&wdev->dev, "event: type=%d val=%d\n", data->type, val);
 
 	/*
 	 * Only the webcam GUID's notifications map to KEY_CAMERA. The
@@ -53,18 +64,24 @@ static void acer_wmi_extras_notify(struct wmi_device *wdev, union acpi_object *d
 
 static int acer_wmi_extras_probe(struct wmi_device *wdev, const void *context)
 {
-	dev_info(&wdev->dev, "claimed\n");
-	if (!strncmp(dev_name(&wdev->dev), ACER_WMI_GUID_WEBCAM,
-		     strlen(ACER_WMI_GUID_WEBCAM)))
+	if ((uintptr_t)context == ACER_WMI_ROLE_WEBCAM)
 		webcam_wdev = wdev;
+	dev_info(&wdev->dev, "claimed\n");
 	return 0;
 }
 
+static void acer_wmi_extras_remove(struct wmi_device *wdev)
+{
+	if (webcam_wdev == wdev)
+		webcam_wdev = NULL;
+}
+
 static const struct wmi_device_id acer_wmi_extras_id_table[] = {
-	{ ACER_WMI_GUID_WEBCAM, NULL },
-	{ ACER_WMI_GUID_EVENT,  NULL },
+	{ ACER_WMI_GUID_WEBCAM, (const void *)ACER_WMI_ROLE_WEBCAM },
+	{ ACER_WMI_GUID_EVENT, (const void *)ACER_WMI_ROLE_EVENT },
 	{ }
 };
+MODULE_DEVICE_TABLE(wmi, acer_wmi_extras_id_table);
 
 static struct wmi_driver acer_wmi_extras_driver = {
 	.driver = {
@@ -72,6 +89,7 @@ static struct wmi_driver acer_wmi_extras_driver = {
 	},
 	.id_table = acer_wmi_extras_id_table,
 	.probe = acer_wmi_extras_probe,
+	.remove = acer_wmi_extras_remove,
 	.notify = acer_wmi_extras_notify,
 };
 
@@ -125,5 +143,5 @@ module_exit(acer_wmi_extras_exit);
 
 MODULE_VERSION("1.0");
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Anas");
+MODULE_AUTHOR("Acer Aspire A715-79G community");
 MODULE_DESCRIPTION("Acer WMI driver for unclaimed GUIDs");
