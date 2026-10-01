@@ -1,5 +1,17 @@
 #!/bin/bash
+# acer-ec installer — DKMS with direct-make fallback.
+# Usage: sudo ./install.sh
 set -euo pipefail
+
+if [ $# -gt 0 ]; then
+    echo "Usage: sudo ./install.sh (no arguments)" >&2
+    exit 2
+fi
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "ERROR: run as root (sudo ./install.sh)" >&2
+    exit 1
+fi
 
 KVERSION=$(uname -r)
 MODDIR="/lib/modules/$KVERSION/extra"
@@ -10,6 +22,11 @@ echo "=== acer-ec installer ==="
 
 # ---- 0. Preflight ----
 command -v pahole &>/dev/null || { echo "ERROR: pahole not found. Install: sudo dnf install dwarves"; exit 1; }
+
+if command -v mokutil &>/dev/null && mokutil --sb-state 2>/dev/null | grep -qi "enabled"; then
+    echo "WARNING: Secure Boot is enabled. Unsigned out-of-tree modules will"
+    echo "fail to load until you sign them and enroll the key (mokutil --import)."
+fi
 
 # Sync kernel-devel .config with running kernel to avoid struct module size mismatch
 KDEV_CFG="/usr/src/kernels/$KVERSION/.config"
@@ -52,6 +69,14 @@ if command -v dkms &>/dev/null; then
     # ~1s, no CC lines) and silently reinstall the previous build.
     # A real build takes tens of seconds — watch for CC lines below.
     dkms remove -m "$DKMS_PKG" -v "$DKMS_VER" --all 2>/dev/null || true
+    # Plus any other installed versions (handles version bumps, e.g. 0.1 -> 1.0).
+    dkms status 2>/dev/null \
+        | awk -F'[:,/ ]+' -v pkg="$DKMS_PKG" '$1 == pkg && $2 != "" {print $2}' \
+        | sort -u \
+        | while read -r old_ver; do
+            [ "$old_ver" != "$DKMS_VER" ] \
+                && dkms remove -m "$DKMS_PKG" -v "$old_ver" --all 2>/dev/null || true
+        done
     rm -rf "/var/lib/dkms/$DKMS_PKG"
     dkms add "$PWD"
     dkms build -m "$DKMS_PKG" -v "$DKMS_VER" -k "$KVERSION"
@@ -105,12 +130,20 @@ echo "Wrote /etc/sensors.d/acer-ec.conf"
 install -m 0755 src/acer-ec.sh /usr/local/bin/acer-ec
 echo "Installed /usr/local/bin/acer-ec"
 
+# Remember whether the optional debug module was live: the reload below
+# only covers the modules-load.d set, so restore a debug session.
+DEBUG_WAS_LOADED=""
+lsmod | grep -q "^acer_ec_debug " && DEBUG_WAS_LOADED=1 || true
+
 # ---- 6. Load ----
 # Unload first so a reinstall actually picks up the new build
 # (modprobe alone is a no-op when the old module is already loaded).
 # Each rmmod is guarded: under set -e a single busy-module failure must
 # not abort the installer and strand the machine without fan control —
 # the modprobe lines below must always run.
+# NOTE: rmmod, not modprobe -r — modprobe also auto-removes the named
+# module's dependencies, so it reaches for acer_ec_core while acer_fanctl
+# still holds it and the batch dies with "in use".
 for m in acer_wmi_extras acer_fanctl acer_ec_debug acer_ec_core; do
     if lsmod | grep -q "^$m"; then
         echo "Unloading old $m..."
@@ -123,6 +156,9 @@ modprobe acer_fanctl
 # extras provides the camera key + WMI event log; reload it too, since the
 # unload loop above removes it (modules-load.d only applies at boot).
 modprobe acer_wmi_extras
+if [ -n "$DEBUG_WAS_LOADED" ]; then
+    modprobe acer_ec_debug
+fi
 
 echo "=== Done ==="
 echo "Status:"
