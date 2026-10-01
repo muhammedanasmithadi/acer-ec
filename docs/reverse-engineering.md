@@ -103,6 +103,57 @@ From DSDT analysis:
 | 0xDB | 1 | RINF | Radio info flags |
 | 0xE0 | 2 | RPM3 | Always 0 (unused on this model) |
 
+### Battery block (0x10-0x2F) — `_BIF` data
+
+The EC also mirrors the ACPI `_BIF` battery information package into this
+window. Values are little-endian 16-bit words. Identified 2026-10-01 by
+cross-referencing a `dump` against live `power_supply` readings.
+
+| Offset | Size | Decodes to | Evidence |
+|---|---|---|---|
+| 0x16 | 2 | Design capacity, mAh | 3410 = `charge_full_design` 3,410,000 µAh |
+| 0x1A | 2 | Full capacity, mAh | 2850 = `charge_full` 2,850,000 µAh |
+| 0x22 | 2 | Pack voltage, mV | 15399, tracks `voltage_now` |
+| 0x2A | 2 | Charge current, mA | 1377 → 1261 across two dumps, tapering |
+| 0x2E | 2 | Present charge, mAh | 402 → 579, tracks `charge_now` |
+| 0x38 | 1 | State of charge, % | 15 → 21, exact match to `capacity` |
+| 0x66 | 2 | Charge cutoff, mV | 15800, just above the observed CV plateau |
+
+The design/full capacity pair matching to the exact milliamp-hour value
+identifies the block: the coincidence of two independent numbers landing
+correctly is not plausible by chance.
+
+`0x38` is the strongest single confirmation. Dumps taken 2 min apart recorded
+15 and 21 while `capacity` reported 15 % and 21 % — a direct byte-for-byte
+match, not a correlation.
+
+| Offset | Size | Contents |
+|---|---|
+| 0x5E | 4 | `"LION"` — ACPI lithium-ion chemistry tag |
+| 0x4A | 20 | Pack descriptor string (`p71D-EBTSCUD-EBT@`) |
+
+`0x66` is a **voltage** cutoff, not a state-of-charge percentage. Two
+independent dumps show the EC tracking *current* state of charge (`0x38`) and
+holding a voltage ceiling (`0x66`), but no byte stores a *target* percentage.
+Acer's 80 % conservation mode is therefore either a firmware compile-time
+constant or state held outside this region. See open question 6.
+
+### No vendor driver exists
+
+Checked before pursuing further RE:
+
+- Acer ships no Linux tooling. `AcerSense` / `Acer Care Center` are Windows
+  only. BIOS is current (1.07.01TACI, no fwupd update available).
+- In-tree `acer-wmi` exposes 16 WMI methods, all fan / thermal / profile /
+  hotkey. Zero battery, charger, calibration, or conservation strings in the
+  module.
+- No module on this system implements `charge_control_end_threshold`, the
+  kernel charge-limit API. It exists for ThinkPad-class hardware; Acer has
+  never implemented it.
+
+The EC RE is not substituting for an available driver. The feature has no
+Linux implementation at any layer.
+
 ---
 
 ## 2. Probed approaches (dead ends)
@@ -154,10 +205,14 @@ Conclusion:
 Raw values from SystemMemory are **tachometer periods**, not RPM:
 
 ```
-RPM ≈ 60,000,000 / raw
+RPM ≈ 120,000,000 / raw
 ```
 
-Example: raw 40000 → 1500 RPM. The module applies this conversion.
+Example: raw 40000 → 3000 RPM. The module applies this conversion.
+
+The constant was originally documented as 60,000,000, which reports every fan
+at exactly half its true speed. Verified against live tach data: raw 41731
+yields 2875 RPM with the correct constant.
 
 ### Profiles verify
 - Profile 1 (quiet): lowest fan speeds
@@ -184,10 +239,15 @@ of unpredictable EC behavior.
    registers?
 3. **Additional temperature sensors** — Does EC RAM contain other sensor
    values beyond TMP (offset 0x07)?
-4. **Tach-to-RPM constant** — Is the 60,000,000 constant correct for this
-   hardware? Some ECs use 30,000,000 for dual-transition tachometers.
+4. **Tach-to-RPM constant** — Resolved. 120,000,000, verified against live
+   tach values.
 5. **MXM_WMMX_GUID** — GUID `F6CB5C3C-9CAE-4EBD-B577-931EA32A2CC0` (NVIDIA
    Optimus display routing) present but not fan-related.
+6. **Charge-limit control** — Is Acer's conservation mode (stop at 80 %)
+   settable at all? The `_BIF` block at `0x10`–`0x2F` exposes telemetry and a
+   voltage cutoff at `0x66`, but no percentage register. Needs a BIOS-side
+   test: enable battery health/calibration in firmware, re-dump, and check
+   whether any byte in the window changes.
 
 ---
 
