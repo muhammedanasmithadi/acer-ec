@@ -62,7 +62,7 @@ acer_ec_core.ko      # infrastructure — ioremap + ACPI handle
     ↓ depends
 acer_fanctl.ko       # consumer — sysfs fan/temp interface
 acer_ec_debug.ko     # optional — debugfs hex dumps
-acer_wmi_extras.ko   # optional — unclaimed Acer WMI GUIDs (camera key, event log)
+acer_wmi_extras.ko   # optional — unclaimed Acer WMI GUIDs (ABBC0F6C camera key, ABBC0F6D event log)
 ```
 
 - `acer_ec_core` exports `ec_core_read8`, `ec_core_read16`, `ec_core_scmd`
@@ -105,9 +105,9 @@ DKMS keeps the modules consistent across kernels. To refresh the modules
 for the running kernel:
 
 ```bash
-sudo dkms uninstall -m acer-ec -v 0.1 --all
-sudo dkms build -m acer-ec -v 0.1 -k $(uname -r)
-sudo dkms install -m acer-ec -v 0.1 -k $(uname -r)
+sudo dkms uninstall -m acer-ec -v 1.0 --all
+sudo dkms build -m acer-ec -v 1.0 -k $(uname -r)
+sudo dkms install -m acer-ec -v 1.0 -k $(uname -r)
 ```
 
 To force reinstall via `install.sh` (re-runs the DKMS add/build/install
@@ -151,12 +151,15 @@ acer-ec/
 │   ├── acer_wmi_extras.c       # WMI binder (ABBC0F6C webcam key, ABBC0F6D event log)
 │   ├── acer-ec.sh              # EC CLI (install.sh copies it to /usr/local/bin/acer-ec)
 ├── Makefile
+├── dkms.conf
 ├── install.sh
 ├── uninstall.sh
 ├── LICENSE              (GPL-2.0)
 ├── README.md
 └── docs/
-    └── reverse-engineering.md
+    ├── reverse-engineering.md
+    └── upstream/
+        └── acer-wmi-support-request.md
 ```
 
 ## Limitations
@@ -176,10 +179,11 @@ acer-ec/
   was cycled — profile switching does NOT clear manual duty state).
   Never assume a duty write preserves the other channel. Recovery from
   a stuck channel: Fn+1 CoolerBoost on/off.
-- **`dut1` is read-only in practice.** The register at 0xCE reflects EC fan
-  state, but writing it does not change fan RPM — the EC firmware
-  overwrites it within ~500ms. Use `profile` switching for indirect
-  CPU fan control.
+- **`dut1` is not fan duty.** The register at 0xCE reflects the EC's
+  internal thermal state, not a PWM setpoint — compare RPM values across
+  profiles to measure fan impact. There is deliberately no `fan1_duty_set`:
+  SCMD 0x68 byte0 writes latch the CPU fan off (see above); use `profile`
+  switching for indirect CPU fan control.
 - **No `dracut --force` needed.** Modules are loaded after rootfs via
   `modules-load.d`. Initramfs inclusion is unnecessary.
 - **RPM values** are converted from raw tachometer periods. Formula:
