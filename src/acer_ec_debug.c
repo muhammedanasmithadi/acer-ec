@@ -5,6 +5,7 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/debugfs.h>
+#include <linux/fs.h>
 #include <linux/uaccess.h>
 #include "acer_ec_core.h"
 
@@ -43,7 +44,14 @@ static ssize_t reg_read(struct file *filp, char __user *buf,
 			size_t count, loff_t *pos, bool wide)
 {
 	char tmp[16];
-	u16 off = (u16)(uintptr_t)filp->private_data;
+	/*
+	 * NOTE: use file_inode()->i_private, not filp->private_data.
+	 * Verified live on 7.2.7: debugfs does not propagate the
+	 * create_file() data pointer into private_data for custom
+	 * fops here (every file silently read offset 0x00 while the
+	 * dump path showed the true values). i_private is authoritative.
+	 */
+	u16 off = (u16)(uintptr_t)file_inode(filp)->i_private;
 	size_t len;
 
 	if (off >= (wide ? EC_SIZE - 1 : EC_SIZE))
