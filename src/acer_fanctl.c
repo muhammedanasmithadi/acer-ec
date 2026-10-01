@@ -56,6 +56,8 @@ static inline u16 raw_to_rpm(u16 raw)
 		return 0;
 	if (raw > 60000)
 		return 0;
+	/* Raw 500-1831 would compute above u16 range (tear values, not real
+	 * fans) — saturate at 65535 rather than wrapping. */
 	return min_t(unsigned int, 120000000U / raw, 65535U);
 }
 
@@ -304,7 +306,7 @@ static const struct attribute_group *acer_hwmon_groups[] = {
 
 static int profile_param = 2;
 module_param(profile_param, int, 0444);
-MODULE_PARM_DESC(profile_param, "Default fan profile (1=quiet 2=balanced 3=performance 4=gaming)");
+MODULE_PARM_DESC(profile_param, "Default fan profile (1=quiet 2=balanced 3=performance 4=gaming, default 2; install.sh sets 4)");
 
 static int __init acer_fanctl_init(void)
 {
