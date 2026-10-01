@@ -105,7 +105,7 @@ static ssize_t dump_read(struct file *filp, char __user *buf,
 		for (j = 0; j < 16 && i + j < EC_SIZE; j++) {
 			avail = 4096 - n;
 			w = snprintf(tmp + n, avail, "%02x ",
-				      ec_core_read8(i + j));
+				     ec_core_read8(i + j));
 			if (w < 0 || (size_t)w >= avail)
 				break;
 			n += w;
@@ -123,10 +123,12 @@ static const struct file_operations reg8_fops = {
 	.owner = THIS_MODULE,
 	.read = reg8_read,
 };
+
 static const struct file_operations reg16_fops = {
 	.owner = THIS_MODULE,
 	.read = reg16_read,
 };
+
 static const struct file_operations dump_fops = {
 	.owner = THIS_MODULE,
 	.read = dump_read,
