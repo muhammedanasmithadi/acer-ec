@@ -28,7 +28,7 @@ sudo cat /sys/kernel/debug/acer_ec/reg8_CE    # matches dut1 in all
 readlink /sys/bus/wmi/devices/*ABBC0F6C*/driver   # acer_wmi_extras
 sudo acer-ec profile balanced                 # round-trip OK
 sudo ./uninstall.sh   # no dkms entry, no sysfs, no configs, no /usr/local/bin/acer-ec
-sudo ./install.sh     # back to balanced, resting state
+sudo ./install.sh     # back to gaming (profile 4, the configured default), resting state
 ```
 
 ## Known firmware behaviors (not bugs)
