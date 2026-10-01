@@ -1,17 +1,27 @@
 #!/bin/bash
+# acer-ec — EC-only fan/profile CLI (reads /sys/kernel/acer_fanctl).
+# Installed by install.sh to /usr/local/bin/acer-ec.
 set -euo pipefail
 
 SYS=/sys/kernel/acer_fanctl
+
+err() { echo "acer-ec: $1" >&2; exit 1; }
+
+profile_name() {
+    case "$1" in
+        1) echo "quiet" ;;
+        2) echo "balanced" ;;
+        3) echo "performance" ;;
+        4) echo "gaming" ;;
+        *) echo "unknown" ;;
+    esac
+}
 
 if [ "$(id -u)" -ne 0 ]; then
     exec sudo "$0" "$@"
 fi
 
-[ -e "$SYS/profile" ] || err "acer_fanctl sysfs not found at $SYS — modules not loaded (run sudo ./install.sh from the acer-ec repo)"
-
-PROFILE_NAMES=(quiet balanced performance gaming)
-
-err() { echo "$1" >&2; exit 1; }
+[ -e "$SYS/profile" ] || err "sysfs not found at $SYS — modules not loaded (run sudo ./install.sh from the acer-ec repo)"
 
 cmd_status() {
     cat "$SYS/all"
@@ -19,33 +29,30 @@ cmd_status() {
 
 cmd_profile_show() {
     local cur name
-    cur=$(cat "$SYS"/profile 2>/dev/null || echo 0)
-    case "$cur" in
-        1) name="quiet" ;; 2) name="balanced" ;;
-        3) name="performance" ;; 4) name="gaming" ;;
-        *) name="unknown" ;;
-    esac
+    cur=$(cat "$SYS/profile" 2>/dev/null || echo 0)
+    name=$(profile_name "$cur")
     echo "Current profile: $name ($cur)"
     echo "Profiles: 1=quiet 2=balanced 3=performance 4=gaming"
     echo "Usage: acer-ec profile <1-4|name>"
 }
 
 cmd_profile_set() {
-    local want got
+    local val want got name
     case "$1" in
-        1|quiet)     val=1 ;;
-        2|balanced)  val=2 ;;
+        1|quiet)      val=1 ;;
+        2|balanced)   val=2 ;;
         3|performance) val=3 ;;
-        4|gaming)    val=4 ;;
-        *)           err "Invalid profile. Use 1-4 or: quiet balanced performance gaming" ;;
+        4|gaming)     val=4 ;;
+        *)            err "Invalid profile. Use 1-4 or: quiet balanced performance gaming" ;;
     esac
-    echo "$val" > "$SYS"/profile
+    echo "$val" > "$SYS/profile"
     want="$val"
-    got=$(cat "$SYS"/profile 2>/dev/null || echo 0)
+    got=$(cat "$SYS/profile" 2>/dev/null || echo 0)
     if [ "$got" != "$want" ]; then
         err "Profile write failed to land in EC (wanted $want, EC reports $got)"
     fi
-    echo "Profile set to ${PROFILE_NAMES[$val-1]} ($val)"
+    name=$(profile_name "$val")
+    echo "Profile set to $name ($val)"
 }
 
 case "${1:-status}" in
