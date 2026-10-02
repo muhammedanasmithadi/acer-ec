@@ -41,7 +41,7 @@ if [ -f "$BOOT_CFG" ] && [ -f "$KDEV_CFG" ]; then
 fi
 
 # ---- 1. Remove old monolithic install if present ----
-if lsmod | grep -q "^acer_fanctl "; then
+if [ -d /sys/module/acer_fanctl ]; then
     echo "Removing old acer_fanctl module..."
     rmmod acer_fanctl || echo "WARNING: could not unload acer_fanctl, continuing anyway"
 fi
@@ -134,7 +134,7 @@ echo "Installed /usr/local/bin/acer-ec"
 # Remember whether the optional debug module was live: the reload below
 # only covers the modules-load.d set, so restore a debug session.
 DEBUG_WAS_LOADED=""
-lsmod | grep -q "^acer_ec_debug " && DEBUG_WAS_LOADED=1 || true
+[ -d /sys/module/acer_ec_debug ] && DEBUG_WAS_LOADED=1 || true
 
 # ---- 6. Load ----
 # Unload first so a reinstall actually picks up the new build
@@ -145,8 +145,10 @@ lsmod | grep -q "^acer_ec_debug " && DEBUG_WAS_LOADED=1 || true
 # NOTE: rmmod, not modprobe -r — modprobe also auto-removes the named
 # module's dependencies, so it reaches for acer_ec_core while acer_fanctl
 # still holds it and the batch dies with "in use".
+# Loaded-state detection uses /sys/module, not lsmod: lsmod output proved
+# unreliable under sudo here (matched nothing for loaded modules).
 for m in acer_wmi_extras acer_fanctl acer_ec_debug acer_ec_core; do
-    if lsmod | grep -q "^$m"; then
+    if [ -d "/sys/module/$m" ]; then
         echo "Unloading old $m..."
         rmmod "$m" || echo "WARNING: could not unload $m, continuing anyway"
     else

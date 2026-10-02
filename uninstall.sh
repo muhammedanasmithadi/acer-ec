@@ -37,7 +37,7 @@ fi
 # module's dependencies and dies with "in use" while dependents load.
 # Guarded per module so one busy module never aborts the uninstall.
 for m in acer_wmi_extras acer_fanctl acer_ec_debug acer_ec_core; do
-    if lsmod | grep -q "^$m"; then
+    if [ -d "/sys/module/$m" ]; then
         echo "Removing $m..."
         rmmod "$m" || echo "WARNING: could not unload $m, continuing anyway"
     fi
