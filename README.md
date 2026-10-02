@@ -1,9 +1,10 @@
 # acer-ec — Acer EC communication framework
 
 [!CAUTION]
-> **This is experimental software.** Writing incorrect values can overheat your
-> laptop. Fan 1 (CPU) is EC-protected and manual duty control has no effect.
-> Use at your own risk.
+> **This is experimental software.** The EC accepts fan-duty writes that
+> latch persistently — there is deliberately no CPU-fan control because a
+> bad write stops the CPU fan until CoolerBoost is cycled. Use `profile`
+> switching for indirect control. Use at your own risk.
 
 ## Supported hardware
 
@@ -52,6 +53,10 @@ echo 0 > /sys/kernel/acer_fanctl/fan2_duty_set
 # Read everything
 cat /sys/kernel/acer_fanctl/all
 ```
+
+Writes to `fan2_duty_set` are best-effort: the call returns success and
+preserves the CPU channel, but the EC manages the channel and may not
+reflect the write (see `docs/verification.md`).
 
 ## Architecture
 
@@ -129,7 +134,12 @@ make -C /usr/src/kernels/$(uname -r) modules_prepare
 make -C /lib/modules/$(uname -r)/build M=$(pwd) clean modules
 sudo make -C /lib/modules/$(uname -r)/build M=$(pwd) modules_install
 sudo depmod -a
-sudo modprobe -r acer_wmi_extras acer_fanctl acer_ec_core
+# Unload in reverse dependency order with rmmod (not modprobe -r, which
+# also tries to drop dependencies and fails with "in use").
+sudo rmmod acer_wmi_extras
+sudo rmmod acer_ec_debug
+sudo rmmod acer_fanctl
+sudo rmmod acer_ec_core
 sudo modprobe acer_fanctl
 ```
 
@@ -185,6 +195,10 @@ acer-ec/
   profiles to measure fan impact. There is deliberately no `fan1_duty_set`:
   SCMD 0x68 byte0 writes latch the CPU fan off (see above); use `profile`
   switching for indirect CPU fan control.
+- **GPU RPM encoding is unverified.** The 120M tach constant is
+  calibrated for the CPU channel; GPU manual-mode readings look
+  implausible under the same constant (see Research findings). Treat
+  `fan2_rpm` as approximate outside auto mode.
 - **No `dracut --force` needed.** Modules are loaded after rootfs via
   `modules-load.d`. Initramfs inclusion is unnecessary.
 - **RPM values** are converted from raw tachometer periods. Formula:

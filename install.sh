@@ -98,8 +98,10 @@ else
 fi
 
 # ---- 4. Modprobe config ----
-# Default EC profile 4=gaming: identical to the other profiles at idle,
-# maximum fan headroom under sustained load (validated on A715-79G).
+# Default EC profile 4=gaming: identical to the other profiles at idle
+# (validated on A715-79G). Recent measurements find the SCMD profile
+# effect unmeasurable on short timescales — see README Research findings;
+# 4 is retained as the configured default.
 cat > "$PROBE_D/acer-ec.conf" <<'CONF'
 # acer-ec — module load order + default profile
 softdep acer_fanctl pre: acer_ec_core

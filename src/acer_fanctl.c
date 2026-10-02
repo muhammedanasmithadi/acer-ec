@@ -57,7 +57,8 @@ static inline u16 raw_to_rpm(u16 raw)
 	if (raw > 60000)
 		return 0;
 	/* Raw 500-1831 would compute above u16 range (tear values, not real
-	 * fans) — saturate at 65535 rather than wrapping. */
+	 * fans) — saturate at 65535 rather than wrapping.
+	 */
 	return min_t(unsigned int, 120000000U / raw, 65535U);
 }
 

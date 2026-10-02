@@ -6,8 +6,8 @@ live gates need the target laptop plus root.
 ## Rootless (CI-safe)
 
 ```bash
-make modules          # clean kbuild, 0 errors (try W=1 too)
-make check            # checkpatch 0e/0w on all src/*.c + shellcheck clean
+make modules          # clean kbuild, 0 errors (try W=1 and W=2 too)
+make check            # checkpatch --strict 0e/0w on all src/*.c + shellcheck clean
 bash -n install.sh uninstall.sh src/acer-ec.sh
 git status --short    # clean after build (outputs are gitignored)
 ```
