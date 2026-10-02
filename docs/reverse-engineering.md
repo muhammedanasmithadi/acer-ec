@@ -38,7 +38,8 @@ The EC uses a command-based protocol through RAM offsets `0xF8`-`0xFD`:
 | FBF2 | `0xFC` | Buffer 2 |
 | FBF3 | `0xFD` | Buffer 3 |
 
-**ECMD protocol** (reverse-engineered from 179 calls):
+**ECMD protocol** (reverse-engineered from 179 calls, re-checked against
+`dsdt.dsl:100640`):
 
 ```
 FCMD=0xC0, FDAT=index    → Read indexed register
@@ -65,6 +66,15 @@ Index 0x08-0x1F → return own index (invalid/return-self)
 | `ABBC0F6C` | 0x6C | Status/query (present) |
 | `ABBC0F6D` | 0x6D | Control/event (present) |
 
+Confirmed against the firmware tables captured 2026-10-02. `\_SB.WMI` sits
+at `dsdt.dsl:95731` and its `_WDG` buffer at `dsdt.dsl:95736` holds exactly
+these three entries, each followed by a 4-byte instance/flags field. None
+appear in `acer_wmi_id_table[]`, which is why the in-tree driver never
+binds. The GUID tails (`8EA1-11D1-00A0-C90629100000`) are a recurring
+Microsoft sample-code pattern rather than an Acer-assigned namespace, so
+treat "these GUIDs mean anything specific" as unproven — the dump shows
+only that the board exposes them.
+
 The `WMBB` method dispatches sub-commands via Arg1:
 
 | Arg1 | Method | Purpose |
@@ -76,15 +86,37 @@ The `WMBB` method dispatches sub-commands via Arg1:
 
 ### SCMD methods mapped
 
-From DSDT analysis:
+From the firmware tables (captured 2026-10-02, `dsdt.dsl`):
 
-**SCMD 0x68** — Write duty cycle (4 bytes → 4 ECMD calls):
-- Byte 0 → FDAT=0x01 (fan 1, overridden by EC)
-- Byte 1 → FDAT=0x02 (fan 2 = GPU, works)
-- Bytes 2-3 → FDAT=0x03, 0x04 (not connected)
+**SCMD 0x68** (`dsdt.dsl:97162`) — Write duty cycle, 4 bytes → 4 ECMD calls:
+- Byte 0 → EC index 0x01
+- Byte 1 → EC index 0x02
+- Byte 2 → EC index 0x03
+- Byte 3 → EC index 0x04
 
-**SCMD 0x69** — Set fan profile:
-- Arg = `BIT(profile-1)`: 1→quiet, 2→balanced, 4→performance, 8→gaming
+**SCMD 0x69** (`dsdt.dsl:97197`) — Run selected channels at full duty.
+`ARGS` is a 4-bit channel mask; each set bit writes the literal `0xFF` to
+one EC index:
+
+| `ARGS` bit | EC index written | Value |
+|---|---|---|
+| `0x01` | 0x01 | `0xFF` |
+| `0x02` | 0x02 | `0xFF` |
+| `0x04` | 0x03 | `0xFF` |
+| `0x08` | 0x04 | `0xFF` |
+
+**This is not a profile selector.** There is no quiet/balanced/performance/
+gaming encoding in the firmware. An earlier draft of these docs read the
+`0xFF` write as a profile number and mapped `BIT(profile-1)` to
+1=quiet, 2=balanced, 3=performance, 4=gaming. Under the actual code that
+mapping is inverted in effect: "quiet" pins fan 1 to maximum. The same
+`0x68`/`0x69` bodies are duplicated verbatim in `\_SB.DCHU.SCMD`
+(`dsdt.dsl:106617` and `dsdt.dsl:106652`).
+
+Sweeping every literal `ECMD` argument buffer in the DSDT turns up only
+these EC register writes: duty `0x00` and `0xFF` on indices 0x01-0x04, plus
+`0xC4` (event enable, index 0x05), `0xC2`, and `0xD8`. No profile register
+exists to set.
 
 ### SystemMemory layout (0xFE0B0100)
 
@@ -214,11 +246,23 @@ The constant was originally documented as 60,000,000, which reports every fan
 at exactly half its true speed. Verified against live tach data: raw 41731
 yields 2875 RPM with the correct constant.
 
-### Profiles verify
-- Profile 1 (quiet): lowest fan speeds
-- Profile 2 (balanced): moderate fan curve
-- Profile 3 (performance): higher RPM before throttling
-- Profile 4 (gaming): highest fan speeds
+### Profiles do not verify
+
+The earlier claim that profile 1/2/3/4 produce ordered fan curves is
+withdrawn. Two independent lines of evidence kill it:
+
+1. The firmware has no profile encoding. SCMD 0x69 is a 4-bit channel mask
+   that writes `0xFF` (see §1), so the four "profiles" differ only in
+   *which* channel gets pinned to full.
+2. The controlled A/B in the README (profiles 2/3/4 × 2/4/8-core loads)
+   measured fan 1 frozen at ~2700 RPM on every combination, with package
+   temperature 94-96 °C and no separation between profiles. That is the
+   expected result if the writes target the wrong registers, not evidence
+   of overlapping fan curves.
+
+The single ~4900 RPM observation is not a controlled run and cannot
+support a ramp claim. Any fan behavior on this platform is still the EC
+acting on its own sensors, not a Linux-selected profile.
 
 ### WINF register suspected function
 
@@ -232,9 +276,9 @@ of unpredictable EC behavior.
 
 ## 4. Open questions
 
-1. **WINF bit 0** — Does setting this disable EC override on DUT1? (Bit 7 of
-   the 0x69 SCMD command already maps to "OS fan control" semantics in DSDT
-   but is never issued.)
+1. **WINF bit 0** — Does setting this disable EC override on DUT1? (No
+   SCMD in the DSDT issues it; the only writer of `0xDA` is the Fn-key
+   event path in SCMD 0x46.)
 2. **ECMD registers 0x00-0x07** — Thermal trip points? Configuration
    registers?
 3. **Additional temperature sensors** — Does EC RAM contain other sensor
@@ -268,33 +312,48 @@ Beyond the 3 Acer GUIDs, these standard Microsoft WMI GUIDs are also exposed
 ### ACPI SCMD method signatures
 
 ```
-SCMD(0x68, buf[4])  →  Write individual EC fields via ECMD
-    buf[0] → duty channel 1 (EC overridden)
-    buf[1] → duty channel 2 (GPU fan, works)
+SCMD(0x68, ARGS)  →  Write four duty bytes via ECMD
+    ARGS[0x00] → EC index 0x01
+    ARGS[0x08] → EC index 0x02
+    ARGS[0x10] → EC index 0x03
+    ARGS[0x18] → EC index 0x04
 
-SCMD(0x69, BIT(n))  →  Set fan profile
-    n=0 → quiet       (value 1)
-    n=1 → balanced    (value 2)
-    n=2 → performance (value 4)
-    n=3 → gaming      (value 8)
+SCMD(0x69, ARGS)  →  Run selected channels at full duty
+    ARGS & 0x01 → write 0xFF to EC index 0x01
+    ARGS & 0x02 → write 0xFF to EC index 0x02
+    ARGS & 0x04 → write 0xFF to EC index 0x03
+    ARGS & 0x08 → write 0xFF to EC index 0x04
+
+Both bodies are duplicated in \_SB.DCHU.SCMD.
 ```
+
+`0x69` is a channel mask, not a profile selector. Any code that maps
+`BIT(n)` to a named fan profile is writing the wrong register — see §3.
 
 ### ECMD method (for reference)
 
+`dsdt.dsl:100640` declares one buffer argument, not four positional ones:
+
 ```asl
-Method (ECMD, 3, Serialized)
+Method (ECMD, 1, NotSerialized)
 {
-    Store (Arg0, FCMD)
-    Store (Arg1, FDAT)
-    If (LEqual (Arg2, One))  // write operation
-    {
-        Store (Arg3, FBUF)
-    }
-    Store (One, FBFC)        // Trigger
-    While (LEqual (FBFC, One)) { }  // Wait for completion
-    Return (FBUF)
+    // Arg0 is an 8-byte buffer
+    Local1 = DerefOf (Arg0 [0x00])   // byte count selector
+    Local2 = DerefOf (Arg0 [0x01]) & 0x80
+    FDAT   = DerefOf (Arg0 [0x03])
+    FBUF   = DerefOf (Arg0 [0x04])
+    FBF1   = DerefOf (Arg0 [0x05])
+    FBF2   = DerefOf (Arg0 [0x06])
+    FBF3   = DerefOf (Arg0 [0x07])
+    FCMD   = DerefOf (Arg0 [0x02])
+    Return (FCMD, FDAT, FBUF, FBF1, FBF2, FBF3)
 }
 ```
+
+Field offsets: `Arg0[2]` is FCMD, `Arg0[3]` is the register index, and
+`Arg0[4]` onward are the data bytes, each written only when
+`Arg0[0]` is large enough to include it. So a register write is the
+literal buffer `{ 0x03, 0x00, 0xC1, <index>, <value>, 0x00, 0x00, 0x00 }`.
 
 Values: FCMD=0xC0 (read), FCMD=0xC1 (write). The index/data byte selects
 the internal EC register, not the SystemMemory offset. There is a mapping

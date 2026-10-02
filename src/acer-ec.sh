@@ -7,6 +7,8 @@ SYS=/sys/kernel/acer_fanctl
 
 err() { echo "acer-ec: $1" >&2; exit 1; }
 
+# Legacy labels. SCMD 0x69 is a channel mask, not a fan profile: bit N
+# writes 0xFF to EC register 0x0N. Kept for script compatibility.
 profile_name() {
     case "$1" in
         1) echo "quiet" ;;
@@ -31,8 +33,9 @@ cmd_profile_show() {
     local cur name
     cur=$(cat "$SYS/profile" 2>/dev/null || echo 0)
     name=$(profile_name "$cur")
-    echo "Current profile: $name ($cur)"
-    echo "Profiles: 1=quiet 2=balanced 3=performance 4=gaming"
+    echo "Current mask: $name ($cur)"
+    echo "Masks: 1=quiet 2=balanced 3=performance 4=gaming (legacy names)"
+    echo "Each bit writes 0xFF to one EC channel register — not a fan curve."
     echo "Usage: acer-ec profile <1-4|name>"
 }
 
@@ -43,16 +46,16 @@ cmd_profile_set() {
         2|balanced)   val=2 ;;
         3|performance) val=3 ;;
         4|gaming)     val=4 ;;
-        *)            err "Invalid profile. Use 1-4 or: quiet balanced performance gaming" ;;
+        *)            err "Invalid mask. Use 1-4 or: quiet balanced performance gaming" ;;
     esac
     echo "$val" > "$SYS/profile"
     want="$val"
     got=$(cat "$SYS/profile" 2>/dev/null || echo 0)
     if [ "$got" != "$want" ]; then
-        err "Profile write failed to land in EC (wanted $want, EC reports $got)"
+        err "Mask write failed to land (wanted $want, driver reports $got)"
     fi
     name=$(profile_name "$val")
-    echo "Profile set to $name ($val)"
+    echo "Channel mask set to $name ($val)"
 }
 
 case "${1:-status}" in
@@ -71,9 +74,9 @@ case "${1:-status}" in
         echo ""
         echo "  acer-ec              Show status (default)"
         echo "  acer-ec status       Show fan/temp values"
-        echo "  acer-ec profile      Show profile help"
-        echo "  acer-ec profile 4    Set profile by number"
-        echo "  acer-ec profile gaming  Set profile by name"
+        echo "  acer-ec profile      Show channel-mask help"
+        echo "  acer-ec profile 4    Set channel mask by number"
+        echo "  acer-ec profile gaming  Set channel mask by legacy name"
         echo "  acer-ec help         This message"
         ;;
     *)

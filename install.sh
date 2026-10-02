@@ -98,12 +98,12 @@ else
 fi
 
 # ---- 4. Modprobe config ----
-# Default EC profile 4=gaming: identical to the other profiles at idle
-# (validated on A715-79G). Recent measurements find the SCMD profile
-# effect unmeasurable on short timescales — see README Research findings;
-# 4 is retained as the configured default.
+# Default SCMD 0x69 channel mask 4: writes 0xFF to EC register 0x04, which
+# the A715-79G never reads (fan 4 slot is unused), so it is the least
+# intrusive default. There is no fan profile here — see README Research
+# findings and docs/reverse-engineering.md.
 cat > "$PROBE_D/acer-ec.conf" <<'CONF'
-# acer-ec — module load order + default profile
+# acer-ec — module load order + default channel mask
 softdep acer_fanctl pre: acer_ec_core
 options acer_fanctl profile_param=4
 CONF

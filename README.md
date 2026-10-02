@@ -22,7 +22,7 @@ DSDT. Tested on **Fedora 44** with kernel **7.2.5**.
 
 | Sysfs file | Access | Description |
 |---|---|---|
-| `profile` | RW (1-4) | Fan profile: 1=quiet, 2=balanced, 3=performance, 4=gaming. Reading it back returns the last profile requested via SCMD (0 = unknown) — driver-tracked, not read from the EC; use it to confirm the write path, not EC state |
+| `profile` | RW (1-4) | Channel mask via SCMD 0x69, NOT a fan profile. The firmware has no profile encoding: 1/2/4/8 select which EC channel register gets `0xFF` written to it. Readback is driver-tracked, not EC state |
 | `fan1_duty` | RO | Fan 1 EC internal state (0-255), NOT direct fan duty |
 | `fan2_duty` | RO | Fan 2 EC internal state (0-255) |
 | `fan1_rpm` | RO | Fan 1 speed (real RPM) |
@@ -41,7 +41,7 @@ DSDT. Tested on **Fedora 44** with kernel **7.2.5**.
 ### Examples
 
 ```bash
-# Set balanced profile
+# Run channel 2 (GPU fan) at full duty — a channel write, not a "profile"
 echo 2 > /sys/kernel/acer_fanctl/profile
 
 # Set GPU fan to 100% (max)
@@ -217,41 +217,52 @@ acer-ec/
 ```bash
 acer-ec                    # show status (default)
 acer-ec status             # pretty-print fan/temp values
-acer-ec profile            # show current profile + help
-acer-ec profile gaming     # set profile by name
-acer-ec profile 4          # set profile by number
+acer-ec profile            # show current channel mask + help
+acer-ec profile gaming     # set channel mask by legacy name
+acer-ec profile 4          # set channel mask by number
 ```
 
-EC profile names: `quiet` (1), `balanced` (2), `performance` (3), `gaming` (4).
-Setting a profile verifies the write by reading it back and errors out if
-the EC reports a different value.
+The names `quiet`/`balanced`/`performance`/`gaming` are retained from
+earlier versions of this driver and are **misleading**. `acpidump` +
+`iasl -d` (2026-10-02) shows SCMD 0x69 at `dsdt.dsl:97197` treats its
+argument as a 4-bit mask and writes `0xFF` to EC register
+0x01/0x02/0x03/0x04, one per set bit. There is no profile register in the
+firmware. `quiet` (1) pins fan 1 to maximum duty. Treat these as numbered
+channel writes, not fan characteristics.
 
 ## Research findings
 
-### EC profile switching (re-verified Sep 2026)
+### Channel-mask writes (formerly called "profile switching")
 
-Controlled A/B across profiles 2/3/4 — same machine, same loads:
+**The fan-profile interpretation was wrong.** `acpidump` + `iasl -d`
+(2026-10-02, `dsdt.dsl:97197`) shows SCMD 0x69 is a 4-bit mask that writes
+`0xFF` to EC register 0x01/0x02/0x03/0x04, one per set bit. No profile
+register exists in the firmware. The controlled A/B below was interpreted
+through the wrong model — the four settings write different registers, and
+the measurements show no separation between them, which is what a
+wrong-register write looks like.
+
+Controlled A/B across the four channel settings — same machine, same loads:
 
 | Condition | dut1 | Fan1 RPM | EC TMP | Package |
 |---|---|---|---|---|
-| Idle, any profile | 71 | ~2700 | 70–73°C | 69–73°C |
-| 2-core load 20 s, profile 3 | 71 (frozen) | ~2700 | 96°C | 94–96°C |
-| 4-core load 24 s, profile 4 | 71 (frozen) | ~2700 | 96°C | 94–96°C |
-| 8-core load 30 s, profile 4 | 71 (frozen) | ~2700 | 95°C | 94–96°C |
-| 8-core load 30 s, profile 2 | 71 (frozen) | ~2700 | 95–96°C | 95–96°C |
-| ~10-core sustained load, profile 2 | ramped | ~4900 (single observation during a package update, not a controlled run) | — | 96°C |
+| Idle, any setting | 71 | ~2700 | 70–73°C | 69–73°C |
+| 2-core load 20 s, mask 4 | 71 (frozen) | ~2700 | 96°C | 94–96°C |
+| 4-core load 24 s, mask 8 | 71 (frozen) | ~2700 | 96°C | 94–96°C |
+| 8-core load 30 s, mask 8 | 71 (frozen) | ~2700 | 95°C | 94–96°C |
+| 8-core load 30 s, mask 2 | 71 (frozen) | ~2700 | 95–96°C | 95–96°C |
+| ~10-core sustained load, mask 2 | ramped | ~4900 (single observation during a package update, not a controlled run) | — | 96°C |
 
 Findings:
 
-- The EC **does not ramp the CPU fan for any load on any profile
+- The EC **does not ramp the CPU fan for any load on any setting
   within 30 s** — duty stays at 71 with its own sensor at 95–96°C,
-  across 2/3/4-core and 8-core tests on profiles 2, 3 and 4.
-- Profiles are indistinguishable on all measured timescales. The only
-  observed ramp is minutes-long sustained all-core load, which no
-  longer separates profile curves from EC hysteresis — SCMD 0x69's
-  practical effect is unmeasurable.
-- The EC retains its profile across S3 suspend/resume (verified:
-  duty/RPM/profile identical after a sleep cycle) — no sleep hook needed.
+  across 2/4/8-core tests on masks 2, 4 and 8.
+- Settings are indistinguishable on all measured timescales, and the
+  disassembly explains why: these masks write different registers, not
+  different curve parameters. There is no curve to separate.
+- The EC retains its channel state across S3 suspend/resume (verified:
+  duty/RPM/mask identical after a sleep cycle) — no sleep hook needed.
 
 > Supersedes earlier single-sample readings (12,330 / 15,600 RPM): those
 > exceed plausible blower speeds and were likely tach-transition glitches,

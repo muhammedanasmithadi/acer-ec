@@ -27,6 +27,11 @@
 
 /* SCMD command IDs (\\_SB.WMI SCMD dispatcher) */
 #define SCMD_WRITE_DUTY	0x68
+/*
+ * 0x69 takes a 4-bit channel mask: each set bit writes 0xFF to one EC
+ * register 0x01-0x04. Not a fan profile - the firmware has no profile
+ * register. Misnamed from the pre-2026-10-02 reading; kept to avoid churn.
+ */
 #define SCMD_SET_PROFILE	0x69
 
 static struct kobject *fan_kobj;
@@ -311,7 +316,7 @@ static const struct hwmon_chip_info acer_hwmon_chip = {
 
 static int profile_param = 2;
 module_param(profile_param, int, 0444);
-MODULE_PARM_DESC(profile_param, "Default fan profile (1=quiet 2=balanced 3=performance 4=gaming, default 2; install.sh sets 4)");
+MODULE_PARM_DESC(profile_param, "Default SCMD 0x69 channel mask 1-4, default 2; install.sh sets 4. Bit N writes 0xFF to EC register 0x0N - not a fan profile");
 
 static int __init acer_fanctl_init(void)
 {
