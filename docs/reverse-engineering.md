@@ -144,16 +144,19 @@ cross-referencing a `dump` against live `power_supply` readings.
 | Offset | Size | Decodes to | Evidence |
 |---|---|---|---|
 | 0x16 | 2 | Design capacity, mAh | 3410 = `charge_full_design` 3,410,000 µAh |
-| 0x1A | 2 | Full capacity, mAh | 2850 = `charge_full` 2,850,000 µAh |
-| 0x22 | 2 | Pack voltage, mV | 15399, tracks `voltage_now` |
-| 0x2A | 2 | Charge current, mA | 1377 → 1261 across two dumps, tapering |
-| 0x2E | 2 | Present charge, mAh | 402 → 579, tracks `charge_now` |
-| 0x38 | 1 | State of charge, % | 15 → 21, exact match to `capacity` |
-| 0x66 | 2 | Charge cutoff, mV | 15800, just above the observed CV plateau |
+| 0x1A | 2 | Full capacity, mAh | 2844 = `charge_full` 2,844,000 µAh (2026-10-02, charging); gauge relearned from 2704 across the full-drain event |
+| 0x22 | 2 | Design voltage, mV (constant) | 15400 in every dump while the real pack moved 14.26 → 16.29 V; equals `voltage_min_design` 15,400,000 µV, not live telemetry |
+| 0x2A | 2 | Charge current, mA | 2925 = `current_now` 2,925,000 µA to the digit (2026-10-02, charging); 0 while stalled, matching sysfs exactly |
+| 0x2E | 2 | Present charge, mAh | 179 = `charge_now` 179,000 µAh to the digit (2026-10-02, charging); 0 while stalled |
+| 0x38 | 1 | State of charge, % | 7–8 vs `capacity` 6–7 (2026-10-02, charging — within 1 pp, rounding); 0 while stalled |
+| 0x66 | 2 | Unidentified counter (NOT a cutoff) | 17000 while charging; 0,0,0,0,0,3208 then 3216→…→8 while stalled — counts down and reloads, which no voltage ceiling does |
 
 The design/full capacity pair matching to the exact milliamp-hour value
 identifies the block: the coincidence of two independent numbers landing
-correctly is not plausible by chance.
+correctly is not plausible by chance. The 2026-10-02 recovery run verified
+`0x2A`/`0x2E`/`0x16`/`0x1A` against sysfs to the exact digit in both the
+stalled and charging states, so EC and kernel agree and neither path
+misreports.
 
 `0x38` is the strongest single confirmation. Dumps taken 2 min apart recorded
 15 and 21 while `capacity` reported 15 % and 21 % — a direct byte-for-byte
@@ -164,11 +167,18 @@ match, not a correlation.
 | 0x5E | 4 | `"LION"` — ACPI lithium-ion chemistry tag |
 | 0x4A | 20 | Pack descriptor string (`p71D-EBTSCUD-EBT@`) |
 
-`0x66` is a **voltage** cutoff, not a state-of-charge percentage. Two
-independent dumps show the EC tracking *current* state of charge (`0x38`) and
-holding a voltage ceiling (`0x66`), but no byte stores a *target* percentage.
-Acer's 80 % conservation mode is therefore either a firmware compile-time
-constant or state held outside this region. See open question 6.
+`0x66` was previously documented as a 15800 mV charge cutoff. Withdrawn
+2026-10-02: it read 17000 while charging and counted down (3208 → 8,
+including stable 0 reads) while stalled. A voltage ceiling does not count
+down and reload, so the cutoff interpretation has no support left; the
+register's function is unidentified. No byte in the window stores a
+*target* percentage, so Acer's 80 % conservation mode — if it exists on
+this platform — is either a firmware compile-time constant or state held
+outside this region. See open question 6.
+
+The block is exposed read-only by `acer_ec_debug` as `reg16_16` /
+`reg16_1A` / `reg16_22` / `reg16_2A` / `reg16_2E`, `reg8_38`, `reg16_66`,
+plus a decoded `batt` node — see `docs/charging.md` for the probe ladder.
 
 ### No vendor driver exists
 

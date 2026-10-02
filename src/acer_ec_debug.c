@@ -39,6 +39,17 @@ static const struct ec_dbg_reg ec_dbg_regs[] = {
 	{ "reg16_D2", 0xD2, true },	/* RPM2 tach period */
 	{ "reg16_E0", 0xE0, true },	/* RPM3 (unused) */
 	{ "reg16_D4", 0xD4, true },	/* RPM4 (unused) */
+	/*
+	 * Battery block (0x10-0x3F) — _BIF mirror, see
+	 * docs/reverse-engineering.md. All 16-bit words little-endian.
+	 */
+	{ "reg16_16", 0x16, true },	/* Design capacity, mAh */
+	{ "reg16_1A", 0x1A, true },	/* Full capacity, mAh */
+	{ "reg16_22", 0x22, true },	/* Pack voltage, mV */
+	{ "reg16_2A", 0x2A, true },	/* Charge current, mA */
+	{ "reg16_2E", 0x2E, true },	/* Present charge, mAh */
+	{ "reg8_38", 0x38, false },	/* State of charge, % */
+	{ "reg16_66", 0x66, true },	/* Charge cutoff, mV */
 };
 
 static ssize_t reg_read(struct file *filp, char __user *buf,
@@ -120,6 +131,38 @@ static ssize_t dump_read(struct file *filp, char __user *buf,
 	return ret;
 }
 
+/*
+ * Decoded battery block in one read — the stuck-vs-charging diff unit.
+ * Offsets from docs/reverse-engineering.md; read-only, no EC command.
+ */
+static ssize_t batt_read(struct file *filp, char __user *buf,
+			 size_t count, loff_t *pos)
+{
+	char tmp[192];
+	char chem[5];
+	u16 design = ec_core_read16(0x16);
+	u16 full = ec_core_read16(0x1A);
+	u16 pack_mv = ec_core_read16(0x22);
+	u16 charge_ma = ec_core_read16(0x2A);
+	u16 present = ec_core_read16(0x2E);
+	u8 soc = ec_core_read8(0x38);
+	u16 cutoff = ec_core_read16(0x66);
+	size_t len;
+
+	chem[0] = ec_core_read8(0x5E);
+	chem[1] = ec_core_read8(0x5F);
+	chem[2] = ec_core_read8(0x60);
+	chem[3] = ec_core_read8(0x61);
+	chem[4] = '\0';
+
+	len = scnprintf(tmp, sizeof(tmp),
+			"design_mah=%u full_mah=%u pack_mv=%u charge_ma=%u\n"
+			"present_mah=%u soc_pct=%u cutoff_mv=%u chem=%s\n",
+			design, full, pack_mv, charge_ma,
+			present, soc, cutoff, chem);
+	return simple_read_from_buffer(buf, count, pos, tmp, len);
+}
+
 static const struct file_operations reg8_fops = {
 	.owner = THIS_MODULE,
 	.read = reg8_read,
@@ -133,6 +176,11 @@ static const struct file_operations reg16_fops = {
 static const struct file_operations dump_fops = {
 	.owner = THIS_MODULE,
 	.read = dump_read,
+};
+
+static const struct file_operations batt_fops = {
+	.owner = THIS_MODULE,
+	.read = batt_read,
 };
 
 static int __init acer_ec_debug_init(void)
@@ -155,6 +203,12 @@ static int __init acer_ec_debug_init(void)
 	}
 
 	f = debugfs_create_file("dump", 0444, df_root, NULL, &dump_fops);
+	if (IS_ERR(f)) {
+		debugfs_remove_recursive(df_root);
+		return PTR_ERR(f);
+	}
+
+	f = debugfs_create_file("batt", 0444, df_root, NULL, &batt_fops);
 	if (IS_ERR(f)) {
 		debugfs_remove_recursive(df_root);
 		return PTR_ERR(f);

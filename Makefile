@@ -59,7 +59,7 @@ check:
 		echo "checkpatch.pl not found under $(KDIR), skipping"; \
 	fi; \
 	if command -v shellcheck >/dev/null 2>&1; then \
-		shellcheck -S warning install.sh uninstall.sh src/acer-ec.sh || fail=1; \
+		shellcheck -S warning install.sh uninstall.sh src/acer-ec.sh scripts/charging-probe.sh || fail=1; \
 	else \
 		echo "shellcheck not found, skipping"; \
 	fi; \

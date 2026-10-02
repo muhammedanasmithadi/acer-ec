@@ -22,6 +22,7 @@ sudo ./install.sh     # DKMS add/build/install, configs, CLI, modprobe
 dkms status | grep acer-ec                    # 1.0 installed
 cat /sys/module/acer_fanctl/srcversion        # equals modinfo -F srcversion
 cat /sys/kernel/acer_fanctl/all               #dut/rpm/temp/profile sane
+sudo cat /sys/kernel/debug/acer_ec/batt      #soc/pack/charge/cutoff sane vs sysfs
 sensors | grep -A4 acer_ec                    # fans + temp visible
 # 4 = channel mask 0b1000 -> writes 0xFF to EC register 0x04
 echo 4 | sudo tee /sys/kernel/acer_fanctl/profile && cat /sys/kernel/acer_fanctl/profile
