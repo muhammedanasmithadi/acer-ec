@@ -149,6 +149,8 @@ for m in acer_wmi_extras acer_fanctl acer_ec_debug acer_ec_core; do
     if lsmod | grep -q "^$m"; then
         echo "Unloading old $m..."
         rmmod "$m" || echo "WARNING: could not unload $m, continuing anyway"
+    else
+        echo "$m not loaded, skipping unload"
     fi
 done
 echo "Loading modules..."
