@@ -8,7 +8,6 @@
 #include <linux/kobject.h>
 #include <linux/mutex.h>
 #include <linux/hwmon.h>
-#include <linux/hwmon-sysfs.h>
 #include <linux/err.h>
 #include "acer_ec_core.h"
 
@@ -256,53 +255,58 @@ static struct attribute *acer_fanctl_attrs[] = {
 ATTRIBUTE_GROUPS(acer_fanctl);
 
 /* --- hwmon interface (lm_sensors) --- */
-enum acer_hwmon_channel {
-	ACER_HWMON_TEMP = 0,
-	ACER_HWMON_FAN1,
-	ACER_HWMON_FAN2,
-};
-
-static ssize_t acer_hwmon_val_show(struct device *dev,
-				   struct device_attribute *attr, char *buf)
+static int acer_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
+			   u32 attr, int channel, long *val)
 {
-	struct sensor_device_attribute_2 *sattr = to_sensor_dev_attr_2(attr);
-	long val;
-
-	switch (sattr->nr) {
-	case ACER_HWMON_TEMP:
-		val = ec_core_read8(EC_REG_TMP) * 1000;
-		break;
-	case ACER_HWMON_FAN1:
-		val = raw_to_rpm(ec_core_read16(EC_REG_RPM1));
-		break;
-	case ACER_HWMON_FAN2:
-		val = raw_to_rpm(ec_core_read16(EC_REG_RPM2));
-		break;
+	switch (type) {
+	case hwmon_temp:
+		if (attr != hwmon_temp_input || channel != 0)
+			return -EOPNOTSUPP;
+		*val = ec_core_read8(EC_REG_TMP) * 1000;
+		return 0;
+	case hwmon_fan:
+		if (attr != hwmon_fan_input || (channel != 0 && channel != 1))
+			return -EOPNOTSUPP;
+		*val = raw_to_rpm(ec_core_read16(channel ? EC_REG_RPM2 : EC_REG_RPM1));
+		return 0;
 	default:
-		return -EINVAL;
+		return -EOPNOTSUPP;
 	}
-
-	return sysfs_emit(buf, "%ld\n", val);
 }
 
-static SENSOR_DEVICE_ATTR_2_RO(temp1_input, acer_hwmon_val, ACER_HWMON_TEMP, 0);
-static SENSOR_DEVICE_ATTR_2_RO(fan1_input, acer_hwmon_val, ACER_HWMON_FAN1, 0);
-static SENSOR_DEVICE_ATTR_2_RO(fan2_input, acer_hwmon_val, ACER_HWMON_FAN2, 0);
+static umode_t acer_hwmon_is_visible(const void *drvdata,
+				     enum hwmon_sensor_types type,
+				     u32 attr, int channel)
+{
+	switch (type) {
+	case hwmon_temp:
+		if (attr == hwmon_temp_input && channel == 0)
+			return 0444;
+		break;
+	case hwmon_fan:
+		if (attr == hwmon_fan_input && (channel == 0 || channel == 1))
+			return 0444;
+		break;
+	default:
+		break;
+	}
+	return 0;
+}
 
-static struct attribute *acer_hwmon_attrs[] = {
-	&sensor_dev_attr_temp1_input.dev_attr.attr,
-	&sensor_dev_attr_fan1_input.dev_attr.attr,
-	&sensor_dev_attr_fan2_input.dev_attr.attr,
+static const struct hwmon_ops acer_hwmon_ops = {
+	.is_visible = acer_hwmon_is_visible,
+	.read = acer_hwmon_read,
+};
+
+static const struct hwmon_channel_info * const acer_hwmon_info[] = {
+	HWMON_CHANNEL_INFO(temp, HWMON_T_INPUT),
+	HWMON_CHANNEL_INFO(fan, HWMON_F_INPUT, HWMON_F_INPUT),
 	NULL
 };
 
-static const struct attribute_group acer_hwmon_group = {
-	.attrs = acer_hwmon_attrs,
-};
-
-static const struct attribute_group *acer_hwmon_groups[] = {
-	&acer_hwmon_group,
-	NULL
+static const struct hwmon_chip_info acer_hwmon_chip = {
+	.ops = &acer_hwmon_ops,
+	.info = acer_hwmon_info,
 };
 
 static int profile_param = 2;
@@ -344,8 +348,8 @@ static int __init acer_fanctl_init(void)
 		mutex_unlock(&fanctl_lock);
 	}
 
-	hwmon_dev = hwmon_device_register_with_groups(NULL, "acer_ec",
-						      NULL, acer_hwmon_groups);
+	hwmon_dev = hwmon_device_register_with_info(NULL, "acer_ec", NULL,
+						    &acer_hwmon_chip, NULL);
 	if (IS_ERR(hwmon_dev)) {
 		pr_warn("hwmon registration failed (%ld), sensors won't see it\n",
 			PTR_ERR(hwmon_dev));
